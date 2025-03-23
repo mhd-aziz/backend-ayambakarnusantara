@@ -1,0 +1,128 @@
+// src/prisma/schema.prisma
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id              Int      @id @default(autoincrement())
+  username        String   @unique 
+  email           String   @unique
+  password        String
+  photoUser       String?  @db.VarChar(2048)
+  fullName        String?  
+  address         String?  
+  birthDate       DateTime? 
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  orders          Order[]
+  verificationCode VerificationCodeUser?
+}
+
+model Admin {
+  id              Int      @id @default(autoincrement())
+  username        String   @unique 
+  email           String   @unique
+  password        String
+  photoAdmin      String?  @db.VarChar(2048)
+  fullName        String?  
+  address         String?  
+  birthDate       DateTime? 
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  shop            Shop?
+  verificationCode VerificationCodeAdmin?
+}
+
+model VerificationCodeUser {
+  id                Int      @id @default(autoincrement())
+  code              String  
+  expiresAt         DateTime 
+  userId            Int     @unique   
+  temporaryToken    String? // Temporary token for user verification
+  user              User    @relation(fields: [userId], references: [id])
+  
+  createdAt         DateTime @default(now())
+}
+
+model VerificationCodeAdmin {
+  id                Int      @id @default(autoincrement())
+  code              String  
+  expiresAt         DateTime 
+  adminId           Int     @unique   
+  temporaryToken    String? // Temporary token for admin verification
+  admin             Admin   @relation(fields: [adminId], references: [id])
+  
+  createdAt         DateTime @default(now())
+}
+
+model Shop {
+  id        Int      @id @default(autoincrement())
+  photoShop String?  @db.VarChar(2048)
+  name      String
+  address   String
+  adminId   Int      @unique
+  admin     Admin    @relation(fields: [adminId], references: [id])
+  products  Product[] 
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Product {
+  id          Int      @id @default(autoincrement())
+  photoProduct String?  @db.VarChar(2048)
+  name        String
+  description String
+  price       Float
+  stock       Int
+  shopId      Int
+  shop        Shop     @relation(fields: [shopId], references: [id])
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  orders      Order[]  
+}
+
+enum OrderStatus {
+  PENDING
+  COMPLETED
+  CANCELED
+  EXPIRED
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  FAILED
+  WAITING_FOR_PAYMENT
+  EXPIRED
+}
+
+enum PaymentMethod {
+  BANK_TRANSFER
+  CREDIT_CARD
+  E_WALLET
+}
+
+model Order {
+  id            Int          @id @default(autoincrement())
+  productId     Int
+  userId        Int
+  quantity      Int
+  total         Float
+  status        OrderStatus @default(PENDING) // Order status
+  paymentMethod PaymentMethod? // Metode pembayaran (misalnya, bank transfer, credit card)
+  paymentStatus PaymentStatus? // Status pembayaran (pending, paid, failed)
+  paymentToken  String?     // Token pembayaran dari Midtrans
+  transactionId String?     // ID transaksi dari Midtrans
+  paymentDate   DateTime?   // Tanggal pembayaran (jika sudah dibayar)
+  expiryDate    DateTime?   // Tanggal kadaluarsa pembayaran
+  user          User        @relation(fields: [userId], references: [id])
+  product       Product     @relation(fields: [productId], references: [id])
+  createdAt     DateTime    @default(now())
+}
+
