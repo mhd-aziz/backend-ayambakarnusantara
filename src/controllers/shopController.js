@@ -1,24 +1,33 @@
-const Shop = require("../models/shopModel");
-const Admin = require("../models/adminModel");
+const { PrismaClient } = require("@prisma/client");
+const prisma = new PrismaClient();
 const { bucket } = require("../firebaseConfig");
 const path = require("path");
 const fs = require("fs");
 
 // Function to upload shop image to Firebase Storage
 const uploadImageToFirebase = async (imageFile) => {
-  const filePath = imageFile.path; // Path to the temporary file
-  const fileName = Date.now() + path.extname(imageFile.originalname); // Create a unique file name
-  const file = bucket.file(fileName);
+  try {
+    const filePath = imageFile.path; // Path to the temporary file
+    const fileName = `shops/${Date.now()}-${imageFile.originalname}`; // Create a unique file name with folder structure
+    const file = bucket.file(fileName);
 
-  // Upload the file to Firebase Storage
-  await file.save(fs.readFileSync(filePath), {
-    contentType: imageFile.mimetype,
-    public: true, // Make the file publicly accessible
-  });
+    // Upload the file to Firebase Storage
+    await file.save(fs.readFileSync(filePath), {
+      contentType: imageFile.mimetype,
+      public: true, // Make the file publicly accessible
+    });
 
-  // Get the file's public URL
-  const publicUrl = `https://storage.googleapis.com/${bucket.name}/${fileName}`;
-  return publicUrl;
+    // Get the file's public URL
+    const publicUrl = `https://storage.googleapis.com/${bucket.name}/${fileName}`;
+
+    // Delete temporary file after upload
+    fs.unlinkSync(filePath);
+
+    return publicUrl;
+  } catch (error) {
+    console.error("Error uploading to Firebase:", error);
+    throw new Error("Failed to upload image");
+  }
 };
 
 // Helper function to check if the user is an admin
@@ -39,25 +48,31 @@ exports.createShop = async (req, res) => {
 
   try {
     // Check if the admin exists
-    const admin = await Admin.findUnique({
-      where: { id },
+    const admin = await prisma.admin.findUnique({
+      where: { id: parseInt(id) },
     });
+
     if (!admin) {
       return res.status(404).json({ message: "Admin not found" });
     }
 
-    // Check if the user (admin) already has a shop
-    const existingShop = await Shop.findUnique({
-      where: { adminId: id }, // Check if a shop already exists for this admin
+    // Check if the admin already has a shop
+    const existingShop = await prisma.shop.findUnique({
+      where: { adminId: parseInt(id) },
     });
 
     if (existingShop) {
+      return res.status(400).json({
+        message:
+          "This admin already has a shop. An admin can only create one shop.",
+      });
+    }
+
+    // Validate required fields
+    if (!name || !address) {
       return res
         .status(400)
-        .json({
-          message:
-            "This admin already has a shop. A user can only create one shop.",
-        });
+        .json({ message: "Shop name and address are required" });
     }
 
     // Upload the shop image to Firebase and get the URL
@@ -67,19 +82,23 @@ exports.createShop = async (req, res) => {
     }
 
     // Create the new shop
-    const newShop = await Shop.create({
+    const newShop = await prisma.shop.create({
       data: {
         name,
         address,
-        adminId: id,
+        adminId: parseInt(id),
         photoShop: photoUrl || null, // Set to null if no photo
       },
     });
 
-    res.status(201).json(newShop); // Send the created shop
+    res.status(201).json({
+      success: true,
+      message: "Shop created successfully",
+      data: newShop,
+    });
   } catch (error) {
-    console.error(error);
-    res.status(500).json({ message: "Server error" });
+    console.error("Error creating shop:", error);
+    res.status(500).json({ message: "Server error", error: error.message });
   }
 };
 
@@ -92,10 +111,22 @@ exports.getShopByAdmin = async (req, res) => {
   }
 
   try {
-    const shop = await Shop.findUnique({
-      where: { adminId: id }, // Find the shop by adminId
+    const shop = await prisma.shop.findUnique({
+      where: { adminId: parseInt(id) },
       include: {
-        products: true, // Include products associated with the shop
+        products: {
+          orderBy: {
+            createdAt: "desc", // Get newest products first
+          },
+        },
+        admin: {
+          select: {
+            username: true,
+            email: true,
+            fullName: true,
+            photoAdmin: true,
+          },
+        },
       },
     });
 
@@ -103,10 +134,13 @@ exports.getShopByAdmin = async (req, res) => {
       return res.status(404).json({ message: "Shop not found" });
     }
 
-    res.status(200).json(shop); // Send the shop data
+    res.status(200).json({
+      success: true,
+      data: shop,
+    });
   } catch (error) {
-    console.error(error);
-    res.status(500).json({ message: "Server error" });
+    console.error("Error fetching shop:", error);
+    res.status(500).json({ message: "Server error", error: error.message });
   }
 };
 
@@ -121,35 +155,47 @@ exports.updateShop = async (req, res) => {
   }
 
   try {
-    // Check if the shop exists
-    const shop = await Shop.findUnique({
-      where: { id },
+    // Check if the shop exists for this admin
+    const shop = await prisma.shop.findUnique({
+      where: { adminId: parseInt(id) },
     });
 
     if (!shop) {
       return res.status(404).json({ message: "Shop not found" });
     }
 
+    // Prepare update data
+    const updateData = {};
+    if (name) updateData.name = name;
+    if (address) updateData.address = address;
+
     // Upload the new shop image to Firebase and get the URL
-    let photoUrl = null;
     if (photoShop) {
-      photoUrl = await uploadImageToFirebase(photoShop);
+      try {
+        const photoUrl = await uploadImageToFirebase(photoShop);
+        updateData.photoShop = photoUrl;
+      } catch (uploadError) {
+        return res.status(400).json({
+          message: "Failed to upload image",
+          error: uploadError.message,
+        });
+      }
     }
 
     // Update the shop information
-    const updatedShop = await Shop.update({
-      where: { id },
-      data: {
-        name: name || shop.name, // If no name is provided, retain the existing one
-        address: address || shop.address, // If no address is provided, retain the existing one
-        photoShop: photoUrl || shop.photoShop, // If no new photo is provided, retain the existing photo
-      },
+    const updatedShop = await prisma.shop.update({
+      where: { id: shop.id },
+      data: updateData,
     });
 
-    res.status(200).json(updatedShop); // Send the updated shop data
+    res.status(200).json({
+      success: true,
+      message: "Shop updated successfully",
+      data: updatedShop,
+    });
   } catch (error) {
-    console.error(error);
-    res.status(500).json({ message: "Server error" });
+    console.error("Error updating shop:", error);
+    res.status(500).json({ message: "Server error", error: error.message });
   }
 };
 
@@ -162,20 +208,154 @@ exports.getShopByUser = async (req, res) => {
   }
 
   try {
-    // Fetch all shops from the database
-    const shops = await Shop.findMany({
+    // Pagination parameters
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const skip = (page - 1) * limit;
+
+    // Filter parameters
+    const search = req.query.search || "";
+
+    // Fetch shops with pagination and filtering
+    const shops = await prisma.shop.findMany({
+      where: {
+        OR: [{ name: { contains: search } }, { address: { contains: search } }],
+      },
       include: {
-        products: true, // Include products associated with each shop
+        products: {
+          take: 5, // Only include 5 most recent products per shop
+          orderBy: {
+            createdAt: "desc",
+          },
+        },
+        _count: {
+          select: { products: true },
+        },
+      },
+      skip,
+      take: limit,
+      orderBy: {
+        createdAt: "desc",
       },
     });
 
-    if (shops.length === 0) {
-      return res.status(404).json({ message: "No shops found" });
+    // Get total count for pagination
+    const totalShops = await prisma.shop.count({
+      where: {
+        OR: [{ name: { contains: search } }, { address: { contains: search } }],
+      },
+    });
+
+    res.status(200).json({
+      success: true,
+      data: shops,
+      pagination: {
+        total: totalShops,
+        page,
+        limit,
+        pages: Math.ceil(totalShops / limit),
+      },
+    });
+  } catch (error) {
+    console.error("Error fetching shops:", error);
+    res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
+// Get shop details by ID (for users)
+exports.getShopById = async (req, res) => {
+  const shopId = parseInt(req.params.id);
+
+  try {
+    const shop = await prisma.shop.findUnique({
+      where: { id: shopId },
+      include: {
+        products: {
+          orderBy: {
+            createdAt: "desc",
+          },
+        },
+        admin: {
+          select: {
+            username: true,
+            fullName: true,
+          },
+        },
+      },
+    });
+
+    if (!shop) {
+      return res.status(404).json({ message: "Shop not found" });
     }
 
-    res.status(200).json(shops); // Send the list of shops
+    res.status(200).json({
+      success: true,
+      data: shop,
+    });
   } catch (error) {
-    console.error(error);
-    res.status(500).json({ message: "Server error" });
+    console.error("Error fetching shop details:", error);
+    res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
+// Delete a shop (for admin only)
+exports.deleteShop = async (req, res) => {
+  const { id, role } = req.auth; // Get the admin ID and role from the token
+
+  if (!isAdmin(role)) {
+    return res.status(403).json({ message: "Access forbidden. Not an admin." });
+  }
+
+  try {
+    // Check if the shop exists for this admin
+    const shop = await prisma.shop.findUnique({
+      where: { adminId: parseInt(id) },
+    });
+
+    if (!shop) {
+      return res.status(404).json({ message: "Shop not found" });
+    }
+
+    // Before deleting the shop, you might want to handle related data
+    // This depends on your data model, but you might need to delete:
+    // 1. All products associated with the shop
+    // 2. Delete the shop image from Firebase Storage
+
+    // If the shop has a photo, delete it from Firebase Storage
+    if (shop.photoShop) {
+      try {
+        // Extract the file path from the URL
+        const fileUrl = shop.photoShop;
+        const fileName = fileUrl.split(
+          `https://storage.googleapis.com/${bucket.name}/`
+        )[1];
+
+        // Delete the file from Firebase Storage
+        await bucket.file(fileName).delete();
+        console.log(`Successfully deleted shop image: ${fileName}`);
+      } catch (deleteError) {
+        console.error("Error deleting shop image from Firebase:", deleteError);
+        // Continue with shop deletion even if image deletion fails
+      }
+    }
+
+    // Delete all products associated with the shop
+    await prisma.product.deleteMany({
+      where: { shopId: shop.id },
+    });
+
+    // Delete the shop
+    const deletedShop = await prisma.shop.delete({
+      where: { id: shop.id },
+    });
+
+    res.status(200).json({
+      success: true,
+      message: "Shop and all associated products deleted successfully",
+      data: deletedShop,
+    });
+  } catch (error) {
+    console.error("Error deleting shop:", error);
+    res.status(500).json({ message: "Server error", error: error.message });
   }
 };

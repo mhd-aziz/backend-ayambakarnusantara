@@ -5,6 +5,7 @@ const authRoutes = require("./routes/authRoutes");
 const profileRoutes = require("./routes/profileRoutes");
 const shopRoutes = require("./routes/shopRoutes");
 const productRoutes = require("./routes/productRoutes");
+const cartRoutes = require("./routes/cartRoutes");
 const orderRoutes = require("./routes/orderRoutes");
 const midtransRoutes = require("./routes/midtransRoutes");
 const helmet = require("helmet");
@@ -38,6 +39,7 @@ app.use("/api", authRoutes);
 app.use("/api", profileRoutes);
 app.use("/api", shopRoutes);
 app.use("/api", productRoutes);
+app.use("/api", cartRoutes);
 app.use("/api", orderRoutes);
 app.use("/api", midtransRoutes);
 
