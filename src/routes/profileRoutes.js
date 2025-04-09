@@ -26,4 +26,14 @@ router.put(
   profileController.updateAdminProfile
 );
 
+// Change user password
+router.put("/user/password", authHandler, profileController.changeUserPassword);
+
+// Change admin password
+router.put(
+  "/admin/password",
+  authHandler,
+  profileController.changeAdminPassword
+);
+
 module.exports = router;

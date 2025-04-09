@@ -16,13 +16,15 @@ model User {
   password        String
   photoUser       String?  @db.VarChar(2048)
   fullName        String?  
-  address         String?  
+  address         String?
+  phoneNumber     String?  
   birthDate       DateTime? 
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
-  orders          Order[]
   cart            Cart?
-  verificationCode VerificationCodeUser?
+  orders          Order[]
+  verificationCode VerificationCodeUser?  
+  ratings      Rating[]
 }
 
 model Admin {
@@ -33,6 +35,7 @@ model Admin {
   photoAdmin      String?  @db.VarChar(2048)
   fullName        String?  
   address         String?  
+  phoneNumber     String? 
   birthDate       DateTime? 
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
@@ -45,7 +48,7 @@ model VerificationCodeUser {
   code              String  
   expiresAt         DateTime 
   userId            Int     @unique   
-  temporaryToken    String? // Temporary token for user verification
+  temporaryToken    String?
   user              User    @relation(fields: [userId], references: [id])
   
   createdAt         DateTime @default(now())
@@ -56,7 +59,7 @@ model VerificationCodeAdmin {
   code              String  
   expiresAt         DateTime 
   adminId           Int     @unique   
-  temporaryToken    String? // Temporary token for admin verification
+  temporaryToken    String? 
   admin             Admin   @relation(fields: [adminId], references: [id])
   
   createdAt         DateTime @default(now())
@@ -85,19 +88,20 @@ model Product {
   shop        Shop     @relation(fields: [shopId], references: [id])
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
-  orderItems  OrderItem[]  
   cartItems   CartItem[]
+  orderItems  OrderItem[]
+  ratings      Rating[]
   @@index([shopId])
   @@index([name])
 }
 
 model Cart {
-  id        Int        @id @default(autoincrement())
-  userId    Int        @unique
-  user      User       @relation(fields: [userId], references: [id])
-  items     CartItem[]
-  createdAt DateTime   @default(now())
-  updatedAt DateTime   @updatedAt
+  id          Int        @id @default(autoincrement())
+  userId      Int        @unique
+  user        User       @relation(fields: [userId], references: [id])
+  items       CartItem[] 
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
 }
 
 model CartItem {
@@ -110,124 +114,66 @@ model CartItem {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  @@unique([cartId, productId]) // Mencegah duplikasi produk dalam cart
-}
-
-enum OrderStatus {
-  PENDING           // Pesanan baru dibuat, menunggu pembayaran
-  PREPARATION       // Pembayaran berhasil, makanan sedang disiapkan
-  READY             // Makanan siap untuk diambil
-  COMPLETED         // Pesanan telah diambil dan selesai
-  CANCELLED         // Pesanan dibatalkan oleh pembeli
-  EXPIRED           // Waktu pembayaran berakhir
-}
-
-enum PaymentStatus {
-  PENDING             // Menunggu pembayaran
-  PAID                // Pembayaran berhasil
-  FAILED              // Pembayaran gagal
-  WAITING_FOR_PAYMENT // Menunggu pembayaran dari pembeli
-  EXPIRED             // Waktu pembayaran berakhir
-  REFUNDED            // Dana dikembalikan ke pembeli
-}
-
-enum PaymentMethod {
-  BANK_TRANSFER
-  CREDIT_CARD
-  E_WALLET
-  VIRTUAL_ACCOUNT
-  RETAIL_OUTLET
-  QRIS
-  CASH_ON_PICKUP     // Bayar tunai saat pengambilan
-}
-
-enum PickupMethod {
-  STANDARD          // Pengambilan standar
-  SCHEDULED         // Pengambilan terjadwal
-  DRIVE_THRU        // Pengambilan drive-thru
-  DINE_IN           // Makan di tempat
+  @@unique([cartId, productId])
 }
 
 model Order {
-  id                Int           @id @default(autoincrement())
-  userId            Int
-  orderNumber       String        @unique // Nomor pesanan unik untuk referensi
-  invoiceNumber     String?       @unique // Nomor invoice untuk referensi keuangan
-  total             Float         // Total nilai pesanan
-  subTotal          Float         // Subtotal sebelum pajak dan biaya lain
-  tax               Float?        // Nilai pajak jika ada
-  discount          Float?        // Diskon jika ada
-  serviceFee        Float?        // Biaya layanan jika ada
-  status            OrderStatus   @default(PENDING) 
-  paymentMethod     PaymentMethod? 
-  paymentStatus     PaymentStatus @default(WAITING_FOR_PAYMENT)
-  
-  // Detail Pengambilan
-  pickupMethod      PickupMethod? @default(STANDARD)
-  pickupTime        DateTime?     // Waktu pengambilan (untuk jadwal)
-  pickupCode        String?       // Kode unik untuk verifikasi pengambilan
-  pickupNotes       String?       // Instruksi khusus untuk pengambilan
-  
-  // Snap Payment Fields
-  snapToken         String?       // Token dari Midtrans untuk frontend
-  snapUrl           String?       @db.VarChar(2048) // URL untuk redirect payment
-  snapRedirectUrl   String?       @db.VarChar(2048) // URL untuk redirect setelah pembayaran
-  
-  // Payment Info
-  paymentToken      String?       // Token dari gateway pembayaran
-  transactionId     String?       // ID transaksi dari gateway pembayaran
-  paymentDate       DateTime?     // Tanggal pembayaran berhasil dilakukan
-  expiryDate        DateTime?     // Batas waktu pembayaran
-  
-  // Callback Data
-  callbackData      String?       @db.Text // JSON data dari callback payment gateway
-  
-  // Customer Info
-  customerName      String?       // Nama pelanggan 
-  customerPhone     String?       // Nomor telepon pelanggan
-  
-  // Metadata
-  user              User          @relation(fields: [userId], references: [id])
-  orderItems        OrderItem[]   // Item dalam pesanan
-  notes             String?       // Catatan pelanggan untuk pesanan
-  adminNotes        String?       // Catatan admin (internal)
-  
-  // Shop Info
-  shopId            Int           // ID toko/restoran
-  
-  // Timestamps
-  createdAt         DateTime      @default(now())
-  updatedAt         DateTime      @updatedAt
-  paidAt            DateTime?     // Waktu pembayaran berhasil
-  preparationAt     DateTime?     // Waktu mulai persiapan
-  readyAt           DateTime?     // Waktu pesanan siap diambil
-  completedAt       DateTime?     // Waktu pesanan selesai diambil
-  cancelledAt       DateTime?     // Waktu pesanan dibatalkan
-  
+  id            Int         @id @default(autoincrement())
+  userId        Int
+  user          User        @relation(fields: [userId], references: [id])
+  totalAmount   Float
+  status        String      @default("pending") // pending, paid, cancelled
+  orderItems    OrderItem[]
+  payment       Payment?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
   @@index([userId])
-  @@index([orderNumber])
-  @@index([paymentStatus])
-  @@index([status])
-  @@index([createdAt])
-  @@index([shopId])
 }
 
 model OrderItem {
-  id              Int      @id @default(autoincrement())
-  orderId         Int
-  productId       Int
-  quantity        Int
-  priceAtPurchase Float    // Capture price at time of purchase
-  subtotal        Float    // quantity * priceAtPurchase
-  discount        Float?   // Diskon per item jika ada
-  productName     String   // Simpan nama produk saat pembelian
-  productImage    String?  // Simpan URL gambar produk saat pembelian
-  specialRequest  String?  // Permintaan khusus untuk item makanan (mis. "tanpa bawang", "pedas level 3")
-  order           Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  product         Product  @relation(fields: [productId], references: [id])
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  id          Int      @id @default(autoincrement())
+  orderId     Int
+  order       Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId   Int
+  product     Product  @relation(fields: [productId], references: [id])
+  quantity    Int
+  price       Float    // Store price at time of purchase
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
   @@index([orderId])
   @@index([productId])
+}
+
+model Payment {
+  id              Int      @id @default(autoincrement())
+  orderId         Int      @unique
+  order           Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  amount          Float
+  snapToken       String?  // To store Midtrans Snap token
+  transactionId   String?  // From Midtrans
+  paymentType     String?  // Payment method selected by user
+  vaNumber        String?  // For virtual account payments
+  status          String   @default("pending") 
+  statusOrder     String   @default("pending") 
+  expiryTime      DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+model Rating {
+  id          Int      @id @default(autoincrement())
+  value       Int      // Numerical rating (e.g., 1-5 stars)
+  comment     String?  @db.Text  // Optional comment/review text
+  userId      Int
+  user        User     @relation(fields: [userId], references: [id])
+  productId   Int
+  product     Product  @relation(fields: [productId], references: [id])
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([userId, productId]) // Ensures one rating per user per product
+  @@index([productId])
+  @@index([userId])
 }
