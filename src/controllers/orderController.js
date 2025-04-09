@@ -1,373 +1,174 @@
 const { PrismaClient } = require("@prisma/client");
 const prisma = new PrismaClient();
 const midtransClient = require("midtrans-client");
-const crypto = require("crypto");
-const { v4: uuidv4 } = require("uuid");
 
-// Inisialisasi Midtrans Client (Sandbox Mode)
+// Initialize Midtrans Snap client
 const snap = new midtransClient.Snap({
-  isProduction: false, // Selalu gunakan sandbox untuk pengembangan
+  isProduction: false, // Set to true for production
   serverKey: process.env.MIDTRANS_SERVER_KEY,
   clientKey: process.env.MIDTRANS_CLIENT_KEY,
 });
 
-// Fungsi helper untuk menghasilkan orderNumber unik
-const generateOrderNumber = () => {
-  const timestamp = Date.now().toString();
-  const randomPart = Math.floor(Math.random() * 1000)
-    .toString()
-    .padStart(3, "0");
-  return `ORD${timestamp}${randomPart}`;
-};
-
-// Fungsi helper untuk menghasilkan kode pickup
-const generatePickupCode = () => {
-  return Math.floor(10000 + Math.random() * 90000).toString();
-};
-
-/**
- * Create new order from cart
- */
+// Create a new order from cart
 exports.createOrder = async (req, res) => {
   const { id, role } = req.auth;
-  const {
-    paymentMethod,
-    pickupMethod = "STANDARD",
-    pickupTime,
-    customerName,
-    customerPhone,
-    notes,
-  } = req.body;
 
   if (role !== "user") {
     return res.status(403).json({ message: "Access forbidden. Not a user." });
   }
 
   try {
-    // Mengambil data cart user
+    const userId = parseInt(id);
+    if (isNaN(userId)) {
+      return res.status(400).json({ message: "Invalid user ID" });
+    }
+
+    // Get user with address and phone info for shipping
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+    });
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    // Get user's cart with items
     const cart = await prisma.cart.findUnique({
-      where: { userId: id },
+      where: { userId },
       include: {
         items: {
           include: {
-            product: {
-              select: {
-                id: true,
-                name: true,
-                price: true,
-                photoProduct: true,
-                stock: true,
-                shopId: true,
-                shop: {
-                  select: {
-                    id: true,
-                    name: true,
-                  },
-                },
-              },
-            },
-          },
-        },
-        user: {
-          select: {
-            fullName: true,
-            email: true,
+            product: true,
           },
         },
       },
     });
 
     if (!cart || cart.items.length === 0) {
-      return res.status(400).json({ message: "Your cart is empty." });
+      return res.status(400).json({ message: "Cart is empty" });
     }
 
-    // Memeriksa stok dan menghitung total
-    let subTotal = 0;
-    const stockIssues = [];
-    const orderItems = [];
-
-    // Menginisialisasi shopId, akan dicek untuk semua item
-    let currentShopId = null;
-
-    // Grup produk berdasarkan toko
-    const shopProducts = {};
-
+    // Calculate total amount
+    let totalAmount = 0;
     for (const item of cart.items) {
-      if (item.quantity > item.product.stock) {
-        stockIssues.push({
-          productId: item.product.id,
-          productName: item.product.name,
-          requestedQuantity: item.quantity,
-          availableStock: item.product.stock,
-        });
-        continue;
-      }
-
-      const itemSubtotal = item.product.price * item.quantity;
-      subTotal += itemSubtotal;
-
-      // Semua item harus dari toko yang sama
-      if (currentShopId === null) {
-        currentShopId = item.product.shopId;
-      } else if (currentShopId !== item.product.shopId) {
-        return res.status(400).json({
-          message: "All items in an order must be from the same shop.",
-        });
-      }
-
-      // Mengumpulkan data untuk orderItems
-      orderItems.push({
-        productId: item.product.id,
-        quantity: item.quantity,
-        priceAtPurchase: item.product.price,
-        subtotal: itemSubtotal,
-        productName: item.product.name,
-        productImage: item.product.photoProduct,
-      });
-
-      // Mengelompokkan produk berdasarkan toko
-      const shopId = item.product.shopId;
-      if (!shopProducts[shopId]) {
-        shopProducts[shopId] = {
-          shopId: shopId,
-          shopName: item.product.shop.name,
-          items: [],
-        };
-      }
-
-      shopProducts[shopId].items.push({
-        id: item.product.id,
-        name: item.product.name,
-        price: item.product.price,
-        quantity: item.quantity,
-        subtotal: itemSubtotal,
-      });
+      totalAmount += item.product.price * item.quantity;
     }
 
-    if (stockIssues.length > 0) {
-      return res.status(400).json({
-        message: "Some items in your cart have stock issues.",
-        stockIssues,
-      });
-    }
-
-    if (currentShopId === null) {
-      return res.status(400).json({ message: "No valid items in cart." });
-    }
-
-    // Hitung total dengan pajak dan biaya layanan (jika ada)
-    const tax = subTotal * 0.1; // Contoh: 10% pajak
-    const serviceFee = 5000; // Contoh: biaya layanan tetap
-    const total = subTotal + tax + serviceFee;
-
-    // Buat order number unik
-    const orderNumber = generateOrderNumber();
-    const pickupCode = generatePickupCode();
-
-    // Buat pesanan baru
-    const order = await prisma.order.create({
-      data: {
-        userId: id,
-        orderNumber,
-        shopId: currentShopId, // Gunakan shopId yang telah divalidasi
-        subTotal,
-        tax,
-        serviceFee,
-        total,
-        status: paymentMethod === "CASH_ON_PICKUP" ? "PENDING" : "PENDING",
-        paymentMethod,
-        paymentStatus:
-          paymentMethod === "CASH_ON_PICKUP"
-            ? "PENDING"
-            : "WAITING_FOR_PAYMENT",
-        pickupMethod,
-        pickupTime: pickupTime ? new Date(pickupTime) : null,
-        pickupCode,
-        customerName: customerName || cart.user.fullName || "",
-        customerPhone: customerPhone || "",
-        notes,
-        orderItems: {
-          create: orderItems,
+    // Begin transaction
+    const result = await prisma.$transaction(async (tx) => {
+      // Create order
+      const order = await tx.order.create({
+        data: {
+          userId, // Relasi otomatis dengan userId
+          totalAmount: Math.round(totalAmount), // Midtrans requires integer amounts
+          status: "pending",
+          orderItems: {
+            create: cart.items.map((item) => ({
+              productId: item.productId,
+              quantity: item.quantity,
+              price: item.product.price,
+            })),
+          },
         },
-      },
-      include: {
-        orderItems: true,
-      },
-    });
+        include: {
+          orderItems: {
+            include: {
+              product: true,
+            },
+          },
+        },
+      });
 
-    // Jika pembayaran tunai saat pengambilan
-    if (paymentMethod === "CASH_ON_PICKUP") {
-      // Update stok produk
-      for (const item of cart.items) {
-        await prisma.product.update({
-          where: { id: item.product.id },
-          data: { stock: { decrement: item.quantity } },
-        });
-      }
+      // Create payment record
+      const payment = await tx.payment.create({
+        data: {
+          orderId: order.id,
+          amount: Math.round(totalAmount), // Midtrans requires integer amounts
+          status: "pending",
+        },
+      });
 
-      // Kosongkan keranjang
-      await prisma.cartItem.deleteMany({
+      // Clear cart
+      await tx.cartItem.deleteMany({
         where: { cartId: cart.id },
       });
 
-      return res.status(201).json({
-        message:
-          "Order created successfully with Cash on Pickup payment method.",
-        order,
-        paymentType: "cash_on_pickup",
-      });
-    }
+      return { order, payment };
+    });
 
-    // Untuk metode pembayaran lain, siapkan Midtrans
-    let paymentType;
-    switch (paymentMethod) {
-      case "BANK_TRANSFER":
-        paymentType = "bank_transfer";
-        break;
-      case "CREDIT_CARD":
-        paymentType = "credit_card";
-        break;
-      case "E_WALLET":
-        paymentType = "gopay";
-        break;
-      case "VIRTUAL_ACCOUNT":
-        paymentType = "bank_transfer";
-        break;
-      case "RETAIL_OUTLET":
-        paymentType = "cstore";
-        break;
-      case "QRIS":
-        paymentType = "qris";
-        break;
-      default:
-        paymentType = "bank_transfer";
-    }
+    // Create Midtrans Snap token
+    const orderId = `ORDER-${result.order.id}-${Date.now()}`;
 
-    // Format item untuk Midtrans
-    const itemDetails = cart.items.map((item) => ({
-      id: item.product.id.toString(),
-      price: item.product.price,
-      quantity: item.quantity,
-      name: item.product.name.substring(0, 50), // Midtrans membatasi panjang nama
-    }));
-
-    // Tambahkan pajak dan biaya layanan ke item details
-    if (tax) {
-      itemDetails.push({
-        id: "TAX",
-        price: tax,
-        quantity: 1,
-        name: "Tax",
-      });
-    }
-
-    if (serviceFee) {
-      itemDetails.push({
-        id: "SERVICE",
-        price: serviceFee,
-        quantity: 1,
-        name: "Service Fee",
-      });
-    }
-
-    // Siapkan parameter transaksi Midtrans
-    const transactionDetails = {
+    const parameter = {
       transaction_details: {
-        order_id: orderNumber,
-        gross_amount: total,
+        order_id: orderId,
+        gross_amount: Math.round(result.order.totalAmount),
       },
       customer_details: {
-        first_name: customerName || cart.user.fullName || "Guest",
-        email: cart.user.email || "guest@example.com",
-        phone: customerPhone || "",
+        first_name: user.fullName || user.username || "",
+        email: user.email,
+        phone: user.phoneNumber || "",
       },
-      item_details: itemDetails,
+      item_details: result.order.orderItems.map((item) => ({
+        id: item.productId.toString(),
+        price: Math.round(item.price),
+        quantity: item.quantity,
+        name: item.product.name,
+      })),
       callbacks: {
-        finish: `${process.env.FRONTEND_URL}/order/status/${order.id}`,
+        finish: `${process.env.FRONTEND_URL}/order/finish?order_id=${result.order.id}`,
+        error: `${process.env.FRONTEND_URL}/order/error?order_id=${result.order.id}`,
+        pending: `${process.env.FRONTEND_URL}/order/pending?order_id=${result.order.id}`,
       },
     };
 
-    // Jika metode pembayaran spesifik
-    if (paymentMethod === "VIRTUAL_ACCOUNT") {
-      transactionDetails.payment_type = "bank_transfer";
-      transactionDetails.bank_transfer = {
-        bank: "bca",
-      };
-    } else if (paymentMethod === "E_WALLET") {
-      transactionDetails.payment_type = "gopay";
-    } else if (paymentMethod === "RETAIL_OUTLET") {
-      transactionDetails.payment_type = "cstore";
-      transactionDetails.cstore = {
-        store: "alfamart",
-      };
-    }
+    const snapToken = await snap.createTransaction(parameter);
 
-    // Buat transaksi di Midtrans
-    const midtransResponse = await snap.createTransaction(transactionDetails);
-
-    // Update order dengan token dan URL dari Midtrans
-    const updatedOrder = await prisma.order.update({
-      where: { id: order.id },
+    // Update payment with snapToken and transaction ID
+    await prisma.payment.update({
+      where: { id: result.payment.id },
       data: {
-        snapToken: midtransResponse.token,
-        snapUrl: midtransResponse.redirect_url,
+        snapToken: snapToken.token,
+        transactionId: orderId,
       },
-    });
-
-    // Kosongkan keranjang
-    await prisma.cartItem.deleteMany({
-      where: { cartId: cart.id },
     });
 
     res.status(201).json({
-      message: "Order created successfully",
-      order: updatedOrder,
+      order: result.order,
       payment: {
-        token: midtransResponse.token,
-        redirectUrl: midtransResponse.redirect_url,
-        paymentType,
+        ...result.payment,
+        snapToken: snapToken.token,
+        transactionId: orderId,
       },
     });
   } catch (error) {
-    console.error("Create order error:", error);
-    res.status(500).json({ message: "Server error", error: error.message });
+    console.error(error);
+    res.status(500).json({ message: error.message || "Server error" });
   }
 };
 
-/**
- * Get user orders
- */
+// Get all orders for a user
 exports.getUserOrders = async (req, res) => {
   const { id, role } = req.auth;
-  const { status, page = 1, limit = 10 } = req.query;
 
   if (role !== "user") {
     return res.status(403).json({ message: "Access forbidden. Not a user." });
   }
 
   try {
-    const parsedPage = parseInt(page, 10);
-    const parsedLimit = parseInt(limit, 10);
-    const skip = (parsedPage - 1) * parsedLimit;
-
-    // Buat filter berdasarkan status jika ada
-    const where = { userId: id };
-    if (status) {
-      where.status = status;
+    const userId = parseInt(id);
+    if (isNaN(userId)) {
+      return res.status(400).json({ message: "Invalid user ID" });
     }
 
-    // Hitung total pesanan
-    const totalOrders = await prisma.order.count({ where });
-
-    // Dapatkan pesanan
     const orders = await prisma.order.findMany({
-      where,
+      where: { userId },
       include: {
+        payment: true,
         orderItems: {
           include: {
             product: {
               select: {
-                id: true,
                 name: true,
                 photoProduct: true,
               },
@@ -375,157 +176,355 @@ exports.getUserOrders = async (req, res) => {
           },
         },
       },
-      orderBy: { createdAt: "desc" },
-      skip,
-      take: parsedLimit,
-    });
-
-    res.status(200).json({
-      orders,
-      pagination: {
-        total: totalOrders,
-        page: parsedPage,
-        limit: parsedLimit,
-        totalPages: Math.ceil(totalOrders / parsedLimit),
+      orderBy: {
+        createdAt: "desc",
       },
     });
+
+    res.status(200).json(orders);
   } catch (error) {
-    console.error("Get user orders error:", error);
-    res.status(500).json({ message: "Server error", error: error.message });
+    console.error(error);
+    res.status(500).json({ message: "Server error" });
   }
 };
 
-/**
- * Get order details
- */
+// Get order details
 exports.getOrderDetails = async (req, res) => {
   const { id, role } = req.auth;
   const { orderId } = req.params;
 
   try {
+    const userId = parseInt(id);
+    const orderIdInt = parseInt(orderId);
+
+    if (isNaN(userId) || isNaN(orderIdInt)) {
+      return res.status(400).json({ message: "Invalid ID" });
+    }
+
     const order = await prisma.order.findUnique({
-      where: { id: parseInt(orderId, 10) },
+      where: { id: orderIdInt },
       include: {
-        orderItems: true,
+        orderItems: {
+          include: {
+            product: true,
+          },
+        },
+        payment: true,
+        user: {
+          select: {
+            username: true,
+            fullName: true,
+            email: true,
+            phoneNumber: true,
+            address: true,
+          },
+        },
       },
     });
 
     if (!order) {
-      return res.status(404).json({ message: "Order not found." });
+      return res.status(404).json({ message: "Order not found" });
     }
 
-    // Verifikasi akses
-    if (role === "user" && order.userId !== id) {
+    // Check if user is authorized to view this order
+    if (role === "user" && order.userId !== userId) {
       return res
         .status(403)
-        .json({ message: "You don't have permission to view this order." });
-    }
-
-    if (role === "admin") {
-      // Verifikasi admin toko
-      const shop = await prisma.shop.findUnique({
-        where: { adminId: id },
-      });
-
-      if (!shop || shop.id !== order.shopId) {
-        return res
-          .status(403)
-          .json({ message: "You don't have permission to view this order." });
-      }
+        .json({ message: "Not authorized to view this order" });
     }
 
     res.status(200).json(order);
   } catch (error) {
-    console.error("Get order details error:", error);
-    res.status(500).json({ message: "Server error", error: error.message });
+    console.error(error);
+    res.status(500).json({ message: "Server error" });
   }
 };
 
-/**
- * Update order status (for admin)
- */
-exports.updateOrderStatus = async (req, res) => {
+// Cancel an order
+exports.cancelOrder = async (req, res) => {
   const { id, role } = req.auth;
   const { orderId } = req.params;
-  const { status } = req.body;
-
-  if (role !== "admin") {
-    return res.status(403).json({ message: "Access forbidden. Not an admin." });
-  }
-
-  if (!status) {
-    return res.status(400).json({ message: "Status is required." });
-  }
 
   try {
+    const userId = parseInt(id);
+    const orderIdInt = parseInt(orderId);
+
+    if (isNaN(userId) || isNaN(orderIdInt)) {
+      return res.status(400).json({ message: "Invalid ID" });
+    }
+
     const order = await prisma.order.findUnique({
-      where: { id: parseInt(orderId, 10) },
+      where: { id: orderIdInt },
+      include: {
+        orderItems: true,
+        payment: true,
+      },
     });
 
     if (!order) {
-      return res.status(404).json({ message: "Order not found." });
+      return res.status(404).json({ message: "Order not found" });
     }
 
-    // Verifikasi admin toko
-    const shop = await prisma.shop.findUnique({
-      where: { adminId: id },
-    });
-
-    if (!shop || shop.id !== order.shopId) {
+    // Check if user is authorized to cancel this order
+    if (role === "user" && order.userId !== userId) {
       return res
         .status(403)
-        .json({ message: "You don't have permission to update this order." });
+        .json({ message: "Not authorized to cancel this order" });
     }
 
-    // Data untuk update
-    const updateData = { status };
+    // Check if order can be cancelled
+    if (order.status !== "pending") {
+      return res
+        .status(400)
+        .json({ message: "Cannot cancel order that is not pending" });
+    }
 
-    // Tambahkan timestamp sesuai status
-    switch (status) {
-      case "PREPARATION":
-        updateData.preparationAt = new Date();
-        break;
-      case "READY":
-        updateData.readyAt = new Date();
-        break;
-      case "COMPLETED":
-        updateData.completedAt = new Date();
-        break;
-      case "CANCELLED":
-        updateData.cancelledAt = new Date();
-        // Kembalikan stok jika dibatalkan
-        const orderItems = await prisma.orderItem.findMany({
-          where: { orderId: order.id },
+    // If payment exists and has a transaction in Midtrans, cancel it
+    if (order.payment && order.payment.transactionId) {
+      try {
+        await snap.cancel(order.payment.transactionId);
+      } catch (midtransError) {
+        console.error("Midtrans cancellation error:", midtransError);
+        // Continue with local cancellation even if Midtrans fails
+      }
+    }
+
+    // Begin transaction
+    const result = await prisma.$transaction(async (tx) => {
+      // Update order status
+      const updatedOrder = await tx.order.update({
+        where: { id: orderIdInt },
+        data: { status: "cancelled" },
+      });
+
+      // Update payment status if exists
+      if (order.payment) {
+        await tx.payment.update({
+          where: { id: order.payment.id },
+          data: { status: "cancel" },
         });
-        for (const item of orderItems) {
-          await prisma.product.update({
-            where: { id: item.productId },
-            data: { stock: { increment: item.quantity } },
-          });
-        }
-        break;
-    }
+      }
 
-    // Update status pesanan
-    const updatedOrder = await prisma.order.update({
-      where: { id: order.id },
-      data: updateData,
+      // Restore product stock
+      for (const item of order.orderItems) {
+        const product = await tx.product.findUnique({
+          where: { id: item.productId },
+        });
+
+        await tx.product.update({
+          where: { id: item.productId },
+          data: { stock: product.stock + item.quantity },
+        });
+      }
+
+      return updatedOrder;
     });
 
-    res.status(200).json({
-      message: "Order status updated successfully",
-      order: updatedOrder,
-    });
+    res.status(200).json(result);
   } catch (error) {
-    console.error("Update order status error:", error);
-    res.status(500).json({ message: "Server error", error: error.message });
+    console.error(error);
+    res.status(500).json({ message: "Server error" });
   }
 };
 
-/**
- * Cancel order (for user)
- */
-exports.cancelOrder = async (req, res) => {
+// Get payment status from Midtrans
+exports.getPaymentStatus = async (req, res) => {
+  const { id, role } = req.auth;
+  const { orderId } = req.params;
+
+  try {
+    const userId = parseInt(id);
+    const orderIdInt = parseInt(orderId);
+
+    if (isNaN(userId) || isNaN(orderIdInt)) {
+      return res.status(400).json({ message: "Invalid ID" });
+    }
+
+    const order = await prisma.order.findUnique({
+      where: { id: orderIdInt },
+      include: {
+        payment: true,
+      },
+    });
+
+    if (!order) {
+      return res.status(404).json({ message: "Order not found" });
+    }
+
+    // Check if user is authorized to view this order
+    if (role === "user" && order.userId !== userId) {
+      return res
+        .status(403)
+        .json({ message: "Not authorized to view this order" });
+    }
+
+    if (!order.payment || !order.payment.transactionId) {
+      return res
+        .status(400)
+        .json({ message: "No payment found for this order" });
+    }
+
+    try {
+      // Get status from Midtrans
+      const transactionStatus = await snap.transaction.status(
+        order.payment.transactionId
+      );
+      res.status(200).json(transactionStatus);
+    } catch (midtransError) {
+      // Handle case where transaction doesn't exist in Midtrans
+      console.error("Midtrans status error:", midtransError);
+
+      // Return payment data from database instead
+      res.status(200).json({
+        order_id: order.payment.transactionId,
+        transaction_status: "not_found",
+        message:
+          "Transaction not found in Midtrans. You may need to retry payment.",
+        payment_details: order.payment,
+      });
+    }
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+// Webhook handler for Midtrans notifications
+exports.handleMidtransNotification = async (req, res) => {
+  try {
+    // Log the raw request information for debugging
+    console.log("==== WEBHOOK REQUEST RECEIVED ====");
+    console.log("Headers:", JSON.stringify(req.headers));
+    console.log("Body:", JSON.stringify(req.body));
+
+    // Get the notification data
+    const notification = req.body || {};
+
+    // For manual testing (when calling the endpoint directly)
+    // Check if there's a transaction_id or order_id in the notification
+    // If not, just return OK to acknowledge
+    if (!notification.transaction_id && !notification.order_id) {
+      console.log(
+        "No transaction_id or order_id in notification, this may be a test ping"
+      );
+      return res.status(200).json({
+        status: "OK",
+        message: "Received webhook ping",
+      });
+    }
+
+    // Extract order_id directly from notification if possible
+    const orderId = notification.order_id || notification.transaction_id;
+
+    // If we have an order ID, try to find the corresponding payment
+    if (orderId) {
+      console.log(`Looking for payment with transaction ID: ${orderId}`);
+
+      const payment = await prisma.payment.findFirst({
+        where: { transactionId: orderId },
+        include: { order: true },
+      });
+
+      if (payment) {
+        console.log(
+          `Found payment ID: ${payment.id} for order ID: ${payment.orderId}`
+        );
+
+        // We found the payment, now let's try to update its status based on the notification
+
+        // Order status values from schema: "pending", "paid", "cancelled"
+        let orderStatus = payment.order.status;
+
+        // Payment status values: "pending", "settlement", "deny", "cancel", "expire", "challenge"
+        let paymentStatus = payment.status;
+
+        // Status order values from schema: "pending", "proses", "ready", "delivered"
+        let statusOrder = payment.statusOrder;
+
+        // Try to determine status from notification
+        if (notification.transaction_status) {
+          const txStatus = notification.transaction_status;
+
+          if (txStatus === "settlement" || txStatus === "capture") {
+            paymentStatus = "settlement";
+            orderStatus = "paid";
+            statusOrder = "proses"; // When payment is settled, start processing
+          } else if (txStatus === "deny") {
+            paymentStatus = "deny";
+            // Keep order as pending so user can retry
+            orderStatus = "pending";
+            statusOrder = "cancel";
+          } else if (txStatus === "cancel" || txStatus === "expire") {
+            paymentStatus = txStatus;
+            orderStatus = "cancelled";
+            statusOrder = "cancel";
+          } else if (txStatus === "pending") {
+            paymentStatus = "pending";
+            orderStatus = "pending";
+            statusOrder = "pending";
+          } else {
+            // For any other status, just use the status as is
+            paymentStatus = txStatus;
+          }
+
+          console.log(
+            `Determined status: payment=${paymentStatus}, order=${orderStatus}, delivery=${statusOrder}`
+          );
+
+          // Update payment and order
+          await prisma.$transaction([
+            prisma.payment.update({
+              where: { id: payment.id },
+              data: {
+                status: paymentStatus,
+                statusOrder: statusOrder,
+                paymentType: notification.payment_type || payment.paymentType,
+                vaNumber:
+                  notification.va_numbers && notification.va_numbers[0]
+                    ? notification.va_numbers[0].va_number
+                    : payment.vaNumber,
+              },
+            }),
+            prisma.order.update({
+              where: { id: payment.orderId },
+              data: { status: orderStatus },
+            }),
+          ]);
+
+          console.log(`Successfully updated payment and order status`);
+        } else {
+          console.log(`No transaction_status in notification, skipping update`);
+        }
+      } else {
+        console.log(`No payment found with transaction ID: ${orderId}`);
+      }
+    }
+
+    // Always respond with 200 OK to acknowledge the webhook
+    return res.status(200).json({ status: "OK" });
+  } catch (error) {
+    console.error("Webhook handler error:", error);
+    // Always return 200 OK to prevent Midtrans from retrying
+    return res.status(200).json({
+      status: "OK",
+      message: "Error processing notification, but acknowledged",
+      error_details: error.message,
+    });
+  }
+};
+
+// Get client key for frontend
+exports.getMidtransClientKey = async (req, res) => {
+  try {
+    res.status(200).json({ clientKey: process.env.MIDTRANS_CLIENT_KEY });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+// Retry payment for an order
+exports.retryPayment = async (req, res) => {
   const { id, role } = req.auth;
   const { orderId } = req.params;
 
@@ -534,213 +533,640 @@ exports.cancelOrder = async (req, res) => {
   }
 
   try {
+    const userId = parseInt(id);
+    const orderIdInt = parseInt(orderId);
+
+    if (isNaN(userId) || isNaN(orderIdInt)) {
+      return res.status(400).json({ message: "Invalid ID" });
+    }
+
     const order = await prisma.order.findUnique({
-      where: { id: parseInt(orderId, 10) },
-    });
-
-    if (!order) {
-      return res.status(404).json({ message: "Order not found." });
-    }
-
-    if (order.userId !== id) {
-      return res
-        .status(403)
-        .json({ message: "You don't have permission to cancel this order." });
-    }
-
-    // Cek apakah pesanan masih bisa dibatalkan
-    if (!["PENDING", "WAITING_FOR_PAYMENT"].includes(order.status)) {
-      return res
-        .status(400)
-        .json({ message: "Order cannot be cancelled at this stage." });
-    }
-
-    // Kembalikan stok produk
-    const orderItems = await prisma.orderItem.findMany({
-      where: { orderId: order.id },
-    });
-
-    for (const item of orderItems) {
-      await prisma.product.update({
-        where: { id: item.productId },
-        data: { stock: { increment: item.quantity } },
-      });
-    }
-
-    // Update status pesanan
-    const updatedOrder = await prisma.order.update({
-      where: { id: order.id },
-      data: {
-        status: "CANCELLED",
-        cancelledAt: new Date(),
-      },
-    });
-
-    res.status(200).json({
-      message: "Order cancelled successfully",
-      order: updatedOrder,
-    });
-  } catch (error) {
-    console.error("Cancel order error:", error);
-    res.status(500).json({ message: "Server error", error: error.message });
-  }
-};
-
-/**
- * Get shop orders (for admin)
- */
-exports.getShopOrders = async (req, res) => {
-  const { id, role } = req.auth;
-  const { status, page = 1, limit = 10 } = req.query;
-
-  if (role !== "admin") {
-    return res.status(403).json({ message: "Access forbidden. Not an admin." });
-  }
-
-  try {
-    // Dapatkan toko admin
-    const shop = await prisma.shop.findUnique({
-      where: { adminId: id },
-    });
-
-    if (!shop) {
-      return res.status(404).json({ message: "Shop not found." });
-    }
-
-    const parsedPage = parseInt(page, 10);
-    const parsedLimit = parseInt(limit, 10);
-    const skip = (parsedPage - 1) * parsedLimit;
-
-    // Buat filter berdasarkan status jika ada
-    const where = { shopId: shop.id };
-    if (status) {
-      where.status = status;
-    }
-
-    // Hitung total pesanan
-    const totalOrders = await prisma.order.count({ where });
-
-    // Dapatkan pesanan
-    const orders = await prisma.order.findMany({
-      where,
+      where: { id: orderIdInt },
       include: {
-        orderItems: true,
-        user: {
-          select: {
-            username: true,
-            email: true,
-            fullName: true,
+        orderItems: {
+          include: {
+            product: true,
           },
         },
+        payment: true,
+        user: true,
       },
-      orderBy: { createdAt: "desc" },
-      skip,
-      take: parsedLimit,
-    });
-
-    res.status(200).json({
-      orders,
-      pagination: {
-        total: totalOrders,
-        page: parsedPage,
-        limit: parsedLimit,
-        totalPages: Math.ceil(totalOrders / parsedLimit),
-      },
-    });
-  } catch (error) {
-    console.error("Get shop orders error:", error);
-    res.status(500).json({ message: "Server error", error: error.message });
-  }
-};
-
-/**
- * Handle Midtrans payment notification
- */
-exports.handlePaymentNotification = async (req, res) => {
-  try {
-    let notification = req.body;
-
-    // Verifikasi signature dari Midtrans
-    const orderId = notification.order_id;
-    const statusCode = notification.status_code;
-    const grossAmount = notification.gross_amount;
-    const serverKey = process.env.MIDTRANS_SERVER_KEY;
-    const signature = notification.signature_key;
-
-    const stringToSign = `${orderId}${statusCode}${grossAmount}${serverKey}`;
-    const expectedSignature = crypto
-      .createHash("sha512")
-      .update(stringToSign)
-      .digest("hex");
-
-    if (signature !== expectedSignature) {
-      return res.status(403).json({ message: "Invalid signature" });
-    }
-
-    // Proses berdasarkan status transaksi
-    let orderUpdateData = {
-      callbackData: JSON.stringify(notification),
-    };
-
-    // Temukan pesanan berdasarkan order_id
-    const order = await prisma.order.findUnique({
-      where: { orderNumber: orderId },
     });
 
     if (!order) {
       return res.status(404).json({ message: "Order not found" });
     }
 
-    // Update status pembayaran
-    switch (notification.transaction_status) {
-      case "capture":
-      case "settlement":
-        orderUpdateData.paymentStatus = "PAID";
-        orderUpdateData.status = "PREPARATION";
-        orderUpdateData.paidAt = new Date();
-        orderUpdateData.preparationAt = new Date();
-        orderUpdateData.transactionId = notification.transaction_id;
-
-        // Kurangi stok produk karena pembayaran berhasil
-        const orderItems = await prisma.orderItem.findMany({
-          where: { orderId: order.id },
-        });
-
-        for (const item of orderItems) {
-          await prisma.product.update({
-            where: { id: item.productId },
-            data: { stock: { decrement: item.quantity } },
-          });
-        }
-        break;
-
-      case "deny":
-      case "cancel":
-      case "expire":
-        orderUpdateData.paymentStatus =
-          notification.transaction_status === "expire" ? "EXPIRED" : "FAILED";
-        orderUpdateData.status = "CANCELLED";
-        orderUpdateData.cancelledAt = new Date();
-        break;
-
-      case "pending":
-        orderUpdateData.paymentStatus = "PENDING";
-        break;
-
-      default:
-        orderUpdateData.paymentStatus = "PENDING";
+    if (order.userId !== userId) {
+      return res
+        .status(403)
+        .json({ message: "Not authorized to access this order" });
     }
 
-    // Update pesanan
-    await prisma.order.update({
-      where: { id: order.id },
-      data: orderUpdateData,
+    if (order.status === "paid") {
+      return res.status(400).json({ message: "Order is already paid" });
+    }
+
+    // Create new transaction in Midtrans
+    const newOrderId = `ORDER-${order.id}-${Date.now()}`;
+
+    const parameter = {
+      transaction_details: {
+        order_id: newOrderId,
+        gross_amount: Math.round(order.totalAmount),
+      },
+      customer_details: {
+        first_name: order.user.fullName || order.user.username,
+        email: order.user.email,
+        phone: order.user.phoneNumber || "",
+      },
+      item_details: order.orderItems.map((item) => ({
+        id: item.productId.toString(),
+        price: Math.round(item.price),
+        quantity: item.quantity,
+        name: item.product.name,
+      })),
+      callbacks: {
+        finish: `${process.env.FRONTEND_URL}/order/finish?order_id=${order.id}`,
+        error: `${process.env.FRONTEND_URL}/order/error?order_id=${order.id}`,
+        pending: `${process.env.FRONTEND_URL}/order/pending?order_id=${order.id}`,
+      },
+    };
+
+    const snapToken = await snap.createTransaction(parameter);
+
+    // Update payment with new snapToken and transaction ID
+    await prisma.payment.update({
+      where: { id: order.payment.id },
+      data: {
+        snapToken: snapToken.token,
+        transactionId: newOrderId,
+        status: "pending",
+        statusOrder: "pending", // Reset statusOrder to pending
+        paymentType: null,
+        vaNumber: null,
+      },
     });
 
-    // Kirim respons ke Midtrans
-    res.status(200).json({ status: "OK" });
+    res.status(200).json({
+      message: "Payment retrieval successful",
+      order: order,
+      snapToken: snapToken.token,
+    });
   } catch (error) {
-    console.error("Payment notification error:", error);
+    console.error(error);
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+// Get all orders for admin's shop
+exports.getAllOrders = async (req, res) => {
+  const { id, role } = req.auth;
+
+  if (role !== "admin") {
+    return res.status(403).json({ message: "Access forbidden. Not an admin." });
+  }
+
+  try {
+    const adminId = parseInt(id);
+    if (isNaN(adminId)) {
+      return res.status(400).json({ message: "Invalid admin ID" });
+    }
+
+    // Find the shop associated with this admin
+    const shop = await prisma.shop.findUnique({
+      where: { adminId },
+    });
+
+    if (!shop) {
+      return res.status(404).json({ message: "Shop not found for this admin" });
+    }
+
+    // Get all products from this shop
+    const shopProducts = await prisma.product.findMany({
+      where: { shopId: shop.id },
+      select: { id: true },
+    });
+
+    const productIds = shopProducts.map((product) => product.id);
+
+    // Find orders that contain products from this shop
+    const orders = await prisma.order.findMany({
+      where: {
+        orderItems: {
+          some: {
+            productId: { in: productIds },
+          },
+        },
+      },
+      include: {
+        user: {
+          select: {
+            username: true,
+            email: true,
+            fullName: true,
+            phoneNumber: true,
+            address: true,
+          },
+        },
+        payment: true,
+        orderItems: {
+          include: {
+            product: {
+              select: {
+                name: true,
+                photoProduct: true,
+                price: true,
+                shopId: true,
+              },
+            },
+          },
+        },
+      },
+      orderBy: {
+        createdAt: "desc",
+      },
+    });
+
+    res.status(200).json(orders);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+// Get order statistics for admin's shop only
+exports.getOrderStatistics = async (req, res) => {
+  const { id, role } = req.auth;
+
+  if (role !== "admin") {
+    return res.status(403).json({ message: "Access forbidden. Not an admin." });
+  }
+
+  try {
+    const adminId = parseInt(id);
+    if (isNaN(adminId)) {
+      return res.status(400).json({ message: "Invalid admin ID" });
+    }
+
+    // Find the shop associated with this admin
+    const shop = await prisma.shop.findUnique({
+      where: { adminId },
+    });
+
+    if (!shop) {
+      return res.status(404).json({ message: "Shop not found for this admin" });
+    }
+
+    // Get all products from this shop
+    const shopProducts = await prisma.product.findMany({
+      where: { shopId: shop.id },
+      select: { id: true },
+    });
+
+    const productIds = shopProducts.map((product) => product.id);
+
+    // Base where clause for orders containing products from this shop
+    const baseWhereClause = {
+      orderItems: {
+        some: {
+          productId: { in: productIds },
+        },
+      },
+    };
+
+    // Get total number of orders
+    const totalOrders = await prisma.order.count({
+      where: baseWhereClause,
+    });
+
+    // Find orders IDs with products from this shop
+    const shopOrderIds = await prisma.orderItem.findMany({
+      where: {
+        productId: { in: productIds },
+      },
+      distinct: ["orderId"],
+      select: {
+        orderId: true,
+      },
+    });
+
+    const orderIds = shopOrderIds.map((item) => item.orderId);
+
+    // Completed orders (paid, delivered, settlement)
+    const completedOrders = await prisma.payment.count({
+      where: {
+        orderId: { in: orderIds },
+        statusOrder: { in: ["paid", "delivered", "settlement"] },
+      },
+    });
+
+    // Pending orders (pending, proses, ready)
+    const pendingOrders = await prisma.payment.count({
+      where: {
+        orderId: { in: orderIds },
+        statusOrder: { in: ["pending", "proses", "ready"] },
+      },
+    });
+
+    // Cancelled orders
+    const cancelledOrders = await prisma.payment.count({
+      where: {
+        orderId: { in: orderIds },
+        statusOrder: { in: ["cancelled", "cancel"] },
+      },
+    });
+
+    // Calculate total revenue from completed orders
+    const completedPayments = await prisma.payment.findMany({
+      where: {
+        orderId: { in: orderIds },
+        statusOrder: { in: ["paid", "delivered", "settlement"] },
+      },
+      select: {
+        amount: true,
+      },
+    });
+
+    const totalRevenue = completedPayments.reduce(
+      (sum, payment) => sum + payment.amount,
+      0
+    );
+
+    // Get recent orders
+    const recentOrders = await prisma.order.findMany({
+      where: {
+        id: { in: orderIds },
+      },
+      take: 5,
+      orderBy: { createdAt: "desc" },
+      include: {
+        user: {
+          select: {
+            username: true,
+            fullName: true,
+          },
+        },
+        payment: true,
+        orderItems: {
+          include: {
+            product: {
+              select: {
+                name: true,
+                photoProduct: true,
+                price: true,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    // Get counts by status
+    const statusCounts = await prisma.payment.groupBy({
+      by: ["statusOrder"],
+      where: {
+        orderId: { in: orderIds },
+      },
+      _count: {
+        statusOrder: true,
+      },
+    });
+
+    // Format status counts to a more usable structure
+    const formattedStatusCounts = statusCounts.map((item) => ({
+      status: item.statusOrder,
+      count: item._count.statusOrder,
+    }));
+
+    res.status(200).json({
+      totalOrders,
+      completedOrders,
+      pendingOrders,
+      cancelledOrders,
+      totalRevenue,
+      recentOrders,
+      statusCounts: formattedStatusCounts,
+    });
+  } catch (error) {
+    console.error(error);
     res.status(500).json({ message: "Server error", error: error.message });
   }
 };
+
+// Get payment status (Admin)
+exports.getPaymentStatusAdmin = async (req, res) => {
+  const { id, role } = req.auth;
+  const { paymentId } = req.params;
+
+  if (role !== "admin") {
+    return res.status(403).json({ message: "Access forbidden. Not an admin." });
+  }
+
+  try {
+    const adminId = parseInt(id);
+    if (isNaN(adminId)) {
+      return res.status(400).json({ message: "Invalid admin ID" });
+    }
+
+    // Find the shop associated with this admin
+    const shop = await prisma.shop.findUnique({
+      where: { adminId },
+    });
+
+    if (!shop) {
+      return res.status(404).json({ message: "Shop not found for this admin" });
+    }
+
+    // Find payment and check if it belongs to an order containing products from admin's shop
+    const payment = await prisma.payment.findUnique({
+      where: { id: parseInt(paymentId) },
+      include: {
+        order: {
+          include: {
+            user: {
+              select: {
+                username: true,
+                fullName: true,
+                email: true,
+              },
+            },
+            orderItems: {
+              include: {
+                product: {
+                  select: {
+                    shopId: true,
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    if (!payment) {
+      return res.status(404).json({ message: "Payment not found" });
+    }
+
+    // Check if any product in this order belongs to the admin's shop
+    const hasShopProduct = payment.order.orderItems.some(
+      (item) => item.product.shopId === shop.id
+    );
+
+    if (!hasShopProduct) {
+      return res.status(403).json({
+        message:
+          "Access forbidden. This payment is not associated with your shop.",
+      });
+    }
+
+    // Try to get status from Midtrans for the most up-to-date information
+    try {
+      const midtransStatus = await snap.transaction.status(
+        payment.transactionId
+      );
+      // Update local database if status has changed
+      if (midtransStatus.transaction_status !== payment.status) {
+        await updatePaymentAndOrderStatus(payment.id, midtransStatus);
+      }
+
+      res.status(200).json({
+        payment,
+        midtransStatus,
+      });
+    } catch (midtransError) {
+      // If Midtrans call fails, return local data only
+      res.status(200).json({
+        payment,
+        midtransStatus: { error: "Could not fetch from Midtrans" },
+      });
+    }
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+// Update order status (Admin only)
+exports.updateOrderStatus = async (req, res) => {
+  const { id, role } = req.auth;
+  const { orderId } = req.params;
+  const { statusOrder } = req.body;
+
+  if (role !== "admin") {
+    return res.status(403).json({ message: "Access forbidden. Not an admin." });
+  }
+
+  // Validate status
+  const validStatuses = ["pending", "proses", "ready", "delivered", "cancel"];
+  if (!validStatuses.includes(statusOrder)) {
+    return res.status(400).json({
+      message:
+        "Invalid status. Must be one of: pending, proses, ready, delivered, cancel",
+    });
+  }
+
+  try {
+    const adminId = parseInt(id);
+    if (isNaN(adminId)) {
+      return res.status(400).json({ message: "Invalid admin ID" });
+    }
+
+    // Find the shop associated with this admin
+    const shop = await prisma.shop.findUnique({
+      where: { adminId },
+    });
+
+    if (!shop) {
+      return res.status(404).json({ message: "Shop not found for this admin" });
+    }
+
+    const orderIdInt = parseInt(orderId);
+    if (isNaN(orderIdInt)) {
+      return res.status(400).json({ message: "Invalid order ID" });
+    }
+
+    // Get the order with payment and orderItems to check shop association
+    const order = await prisma.order.findUnique({
+      where: { id: orderIdInt },
+      include: {
+        payment: true,
+        orderItems: {
+          include: {
+            product: {
+              select: {
+                shopId: true,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    if (!order) {
+      return res.status(404).json({ message: "Order not found" });
+    }
+
+    if (!order.payment) {
+      return res
+        .status(404)
+        .json({ message: "Payment not found for this order" });
+    }
+
+    // Check if any product in this order belongs to the admin's shop
+    const hasShopProduct = order.orderItems.some(
+      (item) => item.product.shopId === shop.id
+    );
+
+    if (!hasShopProduct) {
+      return res.status(403).json({
+        message:
+          "Access forbidden. This order is not associated with your shop.",
+      });
+    }
+
+    // Update the statusOrder in payment
+    const updatedPayment = await prisma.payment.update({
+      where: { id: order.payment.id },
+      data: { statusOrder },
+    });
+
+    res.status(200).json({
+      message: "Order status updated successfully",
+      payment: updatedPayment,
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+// Get orders by status for admin's shop only
+exports.getOrdersByStatus = async (req, res) => {
+  const { id, role } = req.auth;
+  const { status } = req.query; // Get status from query parameter
+
+  if (role !== "admin") {
+    return res.status(403).json({ message: "Access forbidden. Not an admin." });
+  }
+
+  try {
+    const adminId = parseInt(id);
+    if (isNaN(adminId)) {
+      return res.status(400).json({ message: "Invalid admin ID" });
+    }
+
+    // Find the shop associated with this admin
+    const shop = await prisma.shop.findUnique({
+      where: { adminId },
+    });
+
+    if (!shop) {
+      return res.status(404).json({ message: "Shop not found for this admin" });
+    }
+
+    // Get all products from this shop
+    const shopProducts = await prisma.product.findMany({
+      where: { shopId: shop.id },
+      select: { id: true },
+    });
+
+    const productIds = shopProducts.map((product) => product.id);
+
+    let whereClause = {
+      orderItems: {
+        some: {
+          productId: { in: productIds },
+        },
+      },
+    };
+
+    // Add status filter if provided
+    if (status) {
+      whereClause.payment = {
+        statusOrder: status,
+      };
+    }
+
+    // Find orders that contain products from this shop and match the status filter
+    const orders = await prisma.order.findMany({
+      where: whereClause,
+      include: {
+        user: {
+          select: {
+            username: true,
+            email: true,
+            fullName: true,
+            phoneNumber: true,
+            address: true,
+          },
+        },
+        payment: true,
+        orderItems: {
+          include: {
+            product: {
+              select: {
+                name: true,
+                photoProduct: true,
+                price: true,
+                shopId: true,
+              },
+            },
+          },
+        },
+      },
+      orderBy: {
+        createdAt: "desc",
+      },
+    });
+
+    res.status(200).json(orders);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+// Helper function to update payment and order status
+async function updatePaymentAndOrderStatus(paymentId, midtransStatus) {
+  const txStatus = midtransStatus.transaction_status;
+  let paymentStatus = txStatus;
+  let orderStatus = "pending";
+  let statusOrder = "pending";
+
+  if (txStatus === "settlement") {
+    orderStatus = "paid";
+    statusOrder = "proses";
+  } else if (
+    txStatus === "cancel" ||
+    txStatus === "deny" ||
+    txStatus === "expire"
+  ) {
+    orderStatus = "cancelled";
+    statusOrder = "cancel"; // Added cancel status here
+  }
+
+  const payment = await prisma.payment.findUnique({
+    where: { id: paymentId },
+    include: { order: true },
+  });
+
+  await prisma.$transaction([
+    prisma.payment.update({
+      where: { id: paymentId },
+      data: {
+        status: paymentStatus,
+        statusOrder: statusOrder, // Added statusOrder update
+        paymentType: midtransStatus.payment_type,
+        vaNumber: midtransStatus.va_numbers?.[0]?.va_number || null,
+      },
+    }),
+    prisma.order.update({
+      where: { id: payment.orderId },
+      data: { status: orderStatus },
+    }),
+  ]);
+
+  return { paymentStatus, orderStatus, statusOrder };
+}

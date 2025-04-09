@@ -7,16 +7,14 @@ const shopRoutes = require("./routes/shopRoutes");
 const productRoutes = require("./routes/productRoutes");
 const cartRoutes = require("./routes/cartRoutes");
 const orderRoutes = require("./routes/orderRoutes");
-const midtransRoutes = require("./routes/midtransRoutes");
+const ratingRoutes = require("./routes/ratingRoutes");
 const helmet = require("helmet");
-const rateLimit = require("express-rate-limit");
-const morgan = require("morgan");
 
 dotenv.config();
 const app = express();
 
 const corsOptions = {
-  origin: process.env.CORS_ORIGIN || "*",
+  origin: "*",
   methods: ["GET", "POST", "PUT", "DELETE"],
   allowedHeaders: ["Content-Type", "Authorization"],
 };
@@ -24,16 +22,7 @@ const corsOptions = {
 app.use(helmet());
 app.use(cors(corsOptions));
 
-const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 100,
-  message: "Too many requests, please try again later.",
-});
-
-app.use(limiter);
-
 app.use(express.json({ limit: "10kb" }));
-app.use(morgan("combined"));
 
 app.use("/api", authRoutes);
 app.use("/api", profileRoutes);
@@ -41,7 +30,7 @@ app.use("/api", shopRoutes);
 app.use("/api", productRoutes);
 app.use("/api", cartRoutes);
 app.use("/api", orderRoutes);
-app.use("/api", midtransRoutes);
+app.use("/api", ratingRoutes);
 
 app.use((err, req, res, next) => {
   console.error(err.stack);

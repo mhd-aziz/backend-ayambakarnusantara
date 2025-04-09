@@ -191,9 +191,42 @@ exports.addToCart = async (req, res) => {
         });
       }
 
-      const updatedCartItem = await prisma.cartItem.update({
-        where: { id: existingCartItem.id },
-        data: { quantity: newQuantity },
+      // Update cart item and reduce product stock in a transaction
+      const [updatedCartItem, updatedProduct] = await prisma.$transaction([
+        prisma.cartItem.update({
+          where: { id: existingCartItem.id },
+          data: { quantity: newQuantity },
+          include: {
+            product: {
+              select: {
+                name: true,
+                price: true,
+              },
+            },
+          },
+        }),
+        prisma.product.update({
+          where: { id: parsedProductId },
+          data: { stock: product.stock - parsedQuantity }, // Reduce stock by the new quantity being added
+        }),
+      ]);
+
+      return res.status(200).json({
+        message: "Cart updated successfully",
+        item: updatedCartItem,
+        added: parsedQuantity,
+        remainingStock: updatedProduct.stock,
+      });
+    }
+
+    // Add new item to cart and reduce product stock in a transaction
+    const [newCartItem, updatedProduct] = await prisma.$transaction([
+      prisma.cartItem.create({
+        data: {
+          cartId: cart.id,
+          productId: parsedProductId,
+          quantity: parsedQuantity,
+        },
         include: {
           product: {
             select: {
@@ -202,35 +235,17 @@ exports.addToCart = async (req, res) => {
             },
           },
         },
-      });
-
-      return res.status(200).json({
-        message: "Cart updated successfully",
-        item: updatedCartItem,
-        added: parsedQuantity,
-      });
-    }
-
-    // Add new item to cart
-    const newCartItem = await prisma.cartItem.create({
-      data: {
-        cartId: cart.id,
-        productId: parsedProductId,
-        quantity: parsedQuantity,
-      },
-      include: {
-        product: {
-          select: {
-            name: true,
-            price: true,
-          },
-        },
-      },
-    });
+      }),
+      prisma.product.update({
+        where: { id: parsedProductId },
+        data: { stock: product.stock - parsedQuantity }, // Reduce stock by quantity
+      }),
+    ]);
 
     res.status(201).json({
       message: "Product added to cart",
       item: newCartItem,
+      remainingStock: updatedProduct.stock,
     });
   } catch (error) {
     console.error("Add to cart error:", error);
@@ -287,42 +302,69 @@ exports.updateCartItem = async (req, res) => {
         .json({ message: "You cannot modify this cart item." });
     }
 
+    // Calculate quantity difference
+    const quantityDifference = parsedQuantity - cartItem.quantity;
+
     // Handle removal if quantity is 0
     if (parsedQuantity === 0) {
-      await prisma.cartItem.delete({
-        where: { id: parsedCartItemId },
-      });
+      // Return the stock and delete the cart item in a transaction
+      const [updatedProduct] = await prisma.$transaction([
+        prisma.product.update({
+          where: { id: cartItem.productId },
+          data: {
+            stock: cartItem.product.stock + cartItem.quantity, // Return all quantity back to stock
+          },
+        }),
+        prisma.cartItem.delete({
+          where: { id: parsedCartItemId },
+        }),
+      ]);
 
-      return res.status(200).json({ message: "Item removed from cart." });
+      return res.status(200).json({
+        message: "Item removed from cart.",
+        updatedStock: updatedProduct.stock,
+      });
     }
 
-    // Check stock availability
-    if (parsedQuantity > cartItem.product.stock) {
+    // Check stock availability if increasing quantity
+    if (quantityDifference > 0 && quantityDifference > cartItem.product.stock) {
       return res.status(400).json({
         message: "Not enough stock available.",
         availableStock: cartItem.product.stock,
+        currentlyInCart: cartItem.quantity,
       });
     }
 
-    // Update the cart item
-    const updatedCartItem = await prisma.cartItem.update({
-      where: { id: parsedCartItemId },
-      data: { quantity: parsedQuantity },
-      include: {
-        product: {
-          select: {
-            id: true,
-            name: true,
-            price: true,
+    // Update the cart item and product stock in a transaction
+    const [updatedCartItem, updatedProduct] = await prisma.$transaction([
+      prisma.cartItem.update({
+        where: { id: parsedCartItemId },
+        data: { quantity: parsedQuantity },
+        include: {
+          product: {
+            select: {
+              id: true,
+              name: true,
+              price: true,
+            },
           },
         },
-      },
-    });
+      }),
+      prisma.product.update({
+        where: { id: cartItem.productId },
+        data: {
+          // Decrease stock if quantityDifference is positive (adding more)
+          // Increase stock if quantityDifference is negative (removing some)
+          stock: cartItem.product.stock - quantityDifference,
+        },
+      }),
+    ]);
 
     res.status(200).json({
       message: "Cart item updated",
       item: updatedCartItem,
       subtotal: updatedCartItem.product.price * updatedCartItem.quantity,
+      remainingStock: updatedProduct.stock,
     });
   } catch (error) {
     console.error("Update cart item error:", error);
@@ -356,7 +398,10 @@ exports.removeFromCart = async (req, res) => {
     // Find the cart item
     const cartItem = await prisma.cartItem.findUnique({
       where: { id: parsedCartItemId },
-      include: { cart: true },
+      include: {
+        cart: true,
+        product: true,
+      },
     });
 
     if (!cartItem) {
@@ -370,12 +415,23 @@ exports.removeFromCart = async (req, res) => {
         .json({ message: "You cannot modify this cart item." });
     }
 
-    // Delete the cart item
-    await prisma.cartItem.delete({
-      where: { id: parsedCartItemId },
-    });
+    // Delete the cart item and update product stock in a transaction
+    const [updatedProduct] = await prisma.$transaction([
+      prisma.product.update({
+        where: { id: cartItem.productId },
+        data: {
+          stock: cartItem.product.stock + cartItem.quantity, // Return quantity to stock
+        },
+      }),
+      prisma.cartItem.delete({
+        where: { id: parsedCartItemId },
+      }),
+    ]);
 
-    res.status(200).json({ message: "Item removed from cart." });
+    res.status(200).json({
+      message: "Item removed from cart.",
+      updatedStock: updatedProduct.stock,
+    });
   } catch (error) {
     console.error("Remove from cart error:", error);
     res.status(500).json({ message: "Server error", error: error.message });
@@ -393,22 +449,43 @@ exports.clearCart = async (req, res) => {
   }
 
   try {
-    // Find user's cart
+    // Find user's cart with items
     const cart = await prisma.cart.findUnique({
       where: { userId: id },
-      select: { id: true },
+      include: {
+        items: {
+          include: {
+            product: true,
+          },
+        },
+      },
     });
 
-    if (!cart) {
-      return res.status(404).json({ message: "Cart not found." });
+    if (!cart || cart.items.length === 0) {
+      return res.status(200).json({ message: "Cart is already empty." });
     }
 
-    // Delete all cart items
-    await prisma.cartItem.deleteMany({
-      where: { cartId: cart.id },
-    });
+    // Prepare stock updates for all products
+    const stockUpdates = cart.items.map((item) =>
+      prisma.product.update({
+        where: { id: item.productId },
+        data: {
+          stock: item.product.stock + item.quantity, // Return quantity to stock
+        },
+      })
+    );
 
-    res.status(200).json({ message: "Cart cleared successfully." });
+    // Execute all updates and delete all cart items in a transaction
+    await prisma.$transaction([
+      ...stockUpdates,
+      prisma.cartItem.deleteMany({
+        where: { cartId: cart.id },
+      }),
+    ]);
+
+    res
+      .status(200)
+      .json({ message: "Cart cleared successfully and stock updated." });
   } catch (error) {
     console.error("Clear cart error:", error);
     res.status(500).json({ message: "Server error", error: error.message });
