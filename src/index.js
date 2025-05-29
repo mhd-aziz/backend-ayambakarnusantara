@@ -12,26 +12,22 @@ const cartRoutes = require("./routes/cartRoutes");
 const orderRoutes = require("./routes/orderRoutes");
 const paymentRoutes = require("./routes/paymentRoutes");
 const ratingRoutes = require("./routes/ratingRoutes");
+const chatbotRoutes = require("./routes/chatbotRoutes");
 require("./config/firebaseConfig");
 
-// Impor Response Handler
 const { handleError } = require("./utils/responseHandler");
-
 const app = express();
 const port = process.env.PORT || 3000;
 
-app.use(
-  cors({
-    origin: "*", 
-    credentials: true, 
-  })
-);
+app.use(cors({
+  origin: process.env.FRONTEND_APP_URL || "http://localhost:3000",
+  credentials: true,
+}));
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
-// Routes Utama
 app.get("/", (req, res) => {
   res.send("Selamat datang di API Ayam Bakar Nusantara!");
 });
@@ -44,6 +40,7 @@ app.use("/cart", cartRoutes);
 app.use("/order", orderRoutes);
 app.use("/payment", paymentRoutes);
 app.use("/rating", ratingRoutes);
+app.use("/chatbot", chatbotRoutes)
 
 app.use((err, req, res, next) => {
   if (res.headersSent) {

@@ -34,8 +34,9 @@ exports.authenticateToken = async (req, res, next) => {
       res.cookie("authToken", "", {
         httpOnly: true,
         secure: process.env.NODE_ENV === "production",
-        sameSite: "Strict",
+        sameSite: "None",
         expires: new Date(0),
+        path: "/", 
       });
     }
 
