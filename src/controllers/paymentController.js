@@ -1,4 +1,5 @@
 // src/controllers/PaymentController.js
+require("dotenv").config();
 const { firestore } = require("../config/firebaseConfig");
 const snap = require("../config/midtransConfig");
 const { handleSuccess, handleError } = require("../utils/responseHandler");
@@ -7,8 +8,7 @@ exports.createMidtransTransaction = async (req, res) => {
   const customerId = req.user?.uid;
   const { orderId } = req.params;
 
-  const FRONTEND_BASE_URL =
-    process.env.FRONTEND_APP_URL || "http://localhost:3000";
+  const FRONTEND_BASE_URL = process.env.FRONTEND_APP_URL;
 
   if (!customerId) {
     return handleError(res, {
@@ -65,7 +65,7 @@ exports.createMidtransTransaction = async (req, res) => {
         {
           token: orderData.paymentDetails.midtransSnapToken,
           redirect_url: orderData.paymentDetails.midtransRedirectUrl,
-          orderId: orderId, // Menggunakan orderId dari params untuk konsistensi
+          orderId: orderId,
         }
       );
     }
@@ -467,9 +467,7 @@ exports.getMidtransTransactionStatus = async (req, res) => {
 exports.retryMidtransPayment = async (req, res) => {
   const customerId = req.user?.uid;
   const { orderId } = req.params;
-  const FRONTEND_BASE_URL =
-    process.env.FRONTEND_APP_URL || "http://localhost:3000";
-
+  const FRONTEND_BASE_URL = process.env.FRONTEND_APP_URL;
   console.log(
     `[PaymentController] Attempting to RETRY payment gateway transaction for orderId: ${orderId}, customerId: ${customerId}`
   );

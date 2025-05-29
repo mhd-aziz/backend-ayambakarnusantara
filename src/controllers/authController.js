@@ -10,6 +10,7 @@ const cookieOptions = {
   secure: process.env.NODE_ENV === "production",
   sameSite: "None",
   maxAge: 24 * 60 * 60 * 1000,
+  path: "/",
 };
 
 exports.register = async (req, res) => {
@@ -243,7 +244,7 @@ exports.forgotPassword = async (req, res) => {
   }
 
   try {
-    await auth.getUserByEmail(email); // Verifikasi email ada di Firebase Auth
+    await auth.getUserByEmail(email);
     await sendPasswordResetEmail(clientAuth, email);
     console.log(`Email reset password untuk ${email} telah dikirim.`);
     return handleSuccess(
