@@ -1,106 +1,205 @@
 // src/controllers/chatbotController.js
-require("dotenv").config();
-const { handleSuccess, handleError } = require("../utils/responseHandler");
 const axios = require("axios");
+const { handleSuccess, handleError } = require("../utils/responseHandler");
+const { firestore } = require("../config/firebaseConfig");
 
-exports.askGemini = async (req, res) => {
-  const { question } = req.body;
-  const userId = req.user?.uid;
+const RASA_WEBHOOK_URL =
+  process.env.RASA_WEBHOOK_URL || "http://localhost:5005/webhooks/rest/webhook";
+const USER_CHAT_HISTORY_COLLECTION = "userChatHistories";
 
-  if (!question) {
+exports.forwardToRasa = async (req, res) => {
+  const { message: userMessageText, sender: senderIdFromFrontend } = req.body;
+
+  if (
+    !userMessageText ||
+    typeof userMessageText !== "string" ||
+    userMessageText.trim() === ""
+  ) {
     return handleError(res, {
       statusCode: 400,
-      message: "Pertanyaan tidak boleh kosong.",
+      message: "Pesan tidak boleh kosong.",
     });
   }
 
+  const rasaSenderId = req.user?.uid || senderIdFromFrontend || "defaultUser";
+  const userId = req.user?.uid;
+
+  const payloadToRasa = {
+    sender: rasaSenderId,
+    message: userMessageText,
+  };
+
+  const authToken = req.firebaseIdToken;
+
+  if (authToken) {
+    payloadToRasa.metadata = {
+      authToken: authToken,
+    };
+  }
+
+  try {
+    const rasaResponse = await axios.post(RASA_WEBHOOK_URL, payloadToRasa);
+
+    if (userId) {
+      const userHistoryDocRef = firestore
+        .collection(USER_CHAT_HISTORY_COLLECTION)
+        .doc(userId);
+
+      const userMessageEntry = {
+        role: "user",
+        text: userMessageText,
+        createdAt: new Date().toISOString(),
+      };
+
+      const botMessageEntriesForDb =
+        rasaResponse.data && Array.isArray(rasaResponse.data)
+          ? rasaResponse.data.map((botMsg) => ({
+              role: "bot",
+              text: botMsg.text || null,
+              imageUrl: botMsg.image || null,
+              createdAt: new Date().toISOString(),
+            }))
+          : [];
+
+      const newMessagesToAdd = [
+        userMessageEntry,
+        ...botMessageEntriesForDb.filter((bm) => bm.text || bm.imageUrl),
+      ];
+
+      try {
+        const doc = await userHistoryDocRef.get();
+        if (doc.exists) {
+          const currentMessages = doc.data().messages || [];
+          await userHistoryDocRef.update({
+            messages: [...currentMessages, ...newMessagesToAdd],
+            lastUpdatedAt: new Date().toISOString(),
+          });
+        } else {
+          await userHistoryDocRef.set({
+            userId: userId,
+            messages: newMessagesToAdd,
+            lastUpdatedAt: new Date().toISOString(),
+            createdAt: new Date().toISOString(),
+          });
+        }
+      } catch (dbError) {
+        console.error(
+          "Gagal menyimpan atau memperbarui riwayat percakapan pengguna:",
+          dbError
+        );
+      }
+    }
+
+    let finalPayloadForClient;
+
+    if (rasaResponse.data && Array.isArray(rasaResponse.data)) {
+      finalPayloadForClient = rasaResponse.data.map((botMsg) => {
+        const { quick_replies, buttons, ...messageWithoutSuggestions } = botMsg;
+        return messageWithoutSuggestions;
+      });
+    } else {
+      finalPayloadForClient = rasaResponse.data;
+    }
+
+    return handleSuccess(
+      res,
+      200,
+      "Pesan berhasil diproses.",
+      finalPayloadForClient
+    );
+  } catch (error) {
+    console.error(
+      "Error saat berkomunikasi dengan Rasa:",
+      error.response?.data || error.message
+    );
+    const statusCode = error.response?.status || 502;
+    const errorMessage =
+      error.response?.data?.message ||
+      error.message ||
+      "Gagal berkomunikasi dengan layanan chatbot.";
+
+    if (error.code === "ECONNREFUSED") {
+      return handleError(res, {
+        statusCode: 503,
+        message: `Layanan chatbot Rasa di ${RASA_WEBHOOK_URL} tidak dapat dijangkau.`,
+      });
+    }
+
+    return handleError(res, {
+      statusCode: statusCode,
+      message: errorMessage,
+      errorDetails: error.response?.data,
+    });
+  }
+};
+
+// Fungsi getChatHistory dan clearChatHistory tetap sama
+exports.getChatHistory = async (req, res) => {
+  const userId = req.user?.uid;
   if (!userId) {
     return handleError(res, {
       statusCode: 401,
-      message: "Otentikasi pengguna diperlukan untuk menggunakan chatbot.",
-    });
-  }
-
-  const externalChatbotApiUrl = process.env.EXTERNAL_CHATBOT_API_URL;
-  if (!externalChatbotApiUrl) {
-    console.error("EXTERNAL_CHATBOT_API_URL tidak diset di .env");
-    return handleError(res, {
-      statusCode: 503,
-      message:
-        "Layanan chatbot tidak tersedia saat ini karena masalah konfigurasi server.",
+      message: "Autentikasi diperlukan untuk melihat riwayat chat.",
     });
   }
 
   try {
-    console.log(
-      `[ChatbotController] Mengirim permintaan ke API eksternal: ${externalChatbotApiUrl}`
-    );
-    console.log(
-      `[ChatbotController] Request body:`,
-      JSON.stringify({ question, userId })
-    );
+    const historyDocRef = firestore
+      .collection(USER_CHAT_HISTORY_COLLECTION)
+      .doc(userId);
+    const doc = await historyDocRef.get();
 
-    const apiResponse = await axios.post(externalChatbotApiUrl, {
-      question: question,
-      userId: userId,
-    });
-
-    console.log(
-      `[ChatbotController] Respon diterima dari API eksternal:`,
-      apiResponse.data
-    );
-
-    if (apiResponse.data && apiResponse.data.answer) {
+    if (!doc.exists) {
       return handleSuccess(
         res,
         200,
-        "Jawaban berhasil diterima dari chatbot.",
-        {
-          question: apiResponse.data.question || question,
-          answer: apiResponse.data.answer,
-          suggestions: apiResponse.data.suggestions || [],
-        }
+        "Tidak ada riwayat percakapan ditemukan.",
+        []
       );
-    } else {
-      console.error(
-        "[ChatbotController] Respon API eksternal tidak memiliki field 'answer'."
-      );
-      return handleError(res, {
-        statusCode: 500,
-        message: "Format respon dari layanan chatbot tidak sesuai.",
-      });
     }
-  } catch (error) {
-    console.error(
-      "[ChatbotController] Error memanggil API chatbot eksternal:",
-      error.response ? error.response.data : error.message
+
+    const historyData = doc.data();
+    return handleSuccess(
+      res,
+      200,
+      "Riwayat percakapan berhasil diambil.",
+      historyData.messages || []
     );
-    let errorMessage = "Gagal mendapatkan jawaban dari chatbot eksternal.";
-    let statusCode = 500;
+  } catch (error) {
+    console.error("Error mengambil riwayat percakapan:", error);
+    return handleError(res, error, "Gagal mengambil riwayat percakapan.");
+  }
+};
 
-    if (axios.isAxiosError(error)) {
-      if (error.response) {
-        statusCode = error.response.status || 500;
-        errorMessage =
-          error.response.data?.message ||
-          error.response.data?.detail ||
-          error.response.statusText ||
-          "Layanan chatbot eksternal mengembalikan error.";
-        console.error(
-          `[ChatbotController] Detail error API eksternal (${statusCode}):`,
-          error.response.data
-        );
-      } else if (error.request) {
-        statusCode = 504;
-        errorMessage =
-          "Tidak ada respon dari layanan chatbot eksternal. Layanan mungkin tidak aktif.";
-      } else {
-        errorMessage = `Terjadi kesalahan saat menyiapkan permintaan ke chatbot: ${error.message}`;
-      }
-    } else {
-      errorMessage = `Terjadi kesalahan internal: ${error.message}`;
+exports.clearChatHistory = async (req, res) => {
+  const userId = req.user?.uid;
+  if (!userId) {
+    return handleError(res, {
+      statusCode: 401,
+      message: "Autentikasi diperlukan untuk menghapus riwayat chat.",
+    });
+  }
+
+  try {
+    const historyDocRef = firestore
+      .collection(USER_CHAT_HISTORY_COLLECTION)
+      .doc(userId);
+
+    const doc = await historyDocRef.get();
+
+    if (!doc.exists) {
+      return handleSuccess(
+        res,
+        200,
+        "Tidak ada riwayat percakapan untuk dihapus."
+      );
     }
 
-    return handleError(res, { statusCode: statusCode, message: errorMessage });
+    await historyDocRef.delete();
+
+    return handleSuccess(res, 200, "Riwayat percakapan berhasil dihapus.");
+  } catch (error) {
+    console.error("Error menghapus riwayat percakapan:", error);
+    return handleError(res, error, "Gagal menghapus riwayat percakapan.");
   }
 };

@@ -28,4 +28,6 @@ router.patch(
 // --- Rute untuk mendapatkan bukti transaksi (akses oleh customer & seller terkait)
 router.get("/:orderId/payment-proofs", orderController.getOrderPaymentProofs);
 
+router.get("/all", orderController.getOrders);
+
 module.exports = router;

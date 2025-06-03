@@ -24,6 +24,7 @@ exports.authenticateToken = async (req, res, next) => {
   try {
     const decodedToken = await auth.verifyIdToken(token, true);
     req.user = decodedToken;
+    req.firebaseIdToken = token;
     next();
   } catch (error) {
     if (
