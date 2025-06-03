@@ -1029,3 +1029,167 @@ exports.getOrderPaymentProofs = async (req, res) => {
     });
   }
 };
+
+exports.getOrders = async (req, res) => {
+  const currentUserId = req.user?.uid;
+  const { status: statusQuery, limit = 10, offset = 0 } = req.query;
+
+  if (!currentUserId) {
+    return handleError(res, {
+      statusCode: 401,
+      message: "Otentikasi diperlukan.",
+    });
+  }
+
+  try {
+    const userRef = firestore.collection("users").doc(currentUserId);
+    const userDoc = await userRef.get();
+
+    if (!userDoc.exists) {
+      return handleError(res, {
+        statusCode: 404,
+        message: "Data pengguna tidak ditemukan.",
+      });
+    }
+    const userData = userDoc.data();
+    const userRole = userData.role;
+
+    let ordersQuery = firestore.collection("orders");
+
+    if (userRole === "customer") {
+      ordersQuery = ordersQuery.where("userId", "==", currentUserId);
+      if (statusQuery && statusQuery.toUpperCase() !== "ALL") {
+        ordersQuery = ordersQuery.where(
+          "orderStatus",
+          "==",
+          statusQuery.toUpperCase()
+        );
+      }
+    } else if (userRole === "seller") {
+      const sellerOwnedShopId = userData.shopId;
+      if (!sellerOwnedShopId) {
+        return handleError(res, {
+          statusCode: 403,
+          message: "Seller tidak memiliki informasi toko yang valid.",
+        });
+      }
+      if (statusQuery && statusQuery.toUpperCase() !== "ALL") {
+        ordersQuery = ordersQuery.where(
+          "orderStatus",
+          "==",
+          statusQuery.toUpperCase()
+        );
+      }
+    } else {
+      return handleError(res, {
+        statusCode: 403,
+        message: "Peran pengguna tidak valid untuk mengakses pesanan.",
+      });
+    }
+
+    ordersQuery = ordersQuery.orderBy("createdAt", "desc");
+
+    ordersQuery = ordersQuery.limit(parseInt(limit));
+
+    const ordersSnapshot = await ordersQuery.get();
+
+    if (ordersSnapshot.empty && userRole === "customer") {
+      return handleSuccess(res, 200, "Anda belum memiliki pesanan.", []);
+    }
+    if (
+      ordersSnapshot.empty &&
+      userRole === "seller" &&
+      fetchedOrders.length === 0
+    ) {
+      // Kondisi ini akan dicek setelah filter seller
+      return handleSuccess(
+        res,
+        200,
+        "Tidak ada pesanan ditemukan untuk toko Anda dengan kriteria ini.",
+        []
+      );
+    }
+
+    let fetchedOrders = ordersSnapshot.docs.map((doc) => {
+      const orderData = doc.data();
+      if (
+        orderData.paymentDetails &&
+        orderData.paymentDetails.gatewayTransactionId
+      ) {
+        orderData.paymentDetails.transactionId =
+          orderData.paymentDetails.gatewayTransactionId;
+      }
+      return orderData;
+    });
+
+    if (userRole === "seller") {
+      const sellerOwnedShopId = userData.shopId;
+      fetchedOrders = fetchedOrders.filter(
+        (order) =>
+          order.items &&
+          order.items.some((item) => item.shopId === sellerOwnedShopId)
+      );
+
+      if (fetchedOrders.length === 0) {
+        return handleSuccess(
+          res,
+          200,
+          "Tidak ada pesanan yang cocok untuk toko Anda setelah filter.",
+          []
+        );
+      }
+
+      const ordersWithCustomerDetails = await Promise.all(
+        fetchedOrders.map(async (order) => {
+          if (order.userId) {
+            const custDoc = await firestore
+              .collection("users")
+              .doc(order.userId)
+              .get();
+            if (custDoc.exists) {
+              const custData = custDoc.data();
+              order.customerRingkas = {
+                displayName: custData.displayName || null,
+              };
+            }
+          }
+          return order;
+        })
+      );
+      fetchedOrders = ordersWithCustomerDetails;
+    } else if (userRole === "customer") {
+      const ordersWithShopDetails = await Promise.all(
+        fetchedOrders.map(async (order) => {
+          if (order.items && order.items.length > 0 && order.items[0].shopId) {
+            const shopDoc = await firestore
+              .collection("shops")
+              .doc(order.items[0].shopId)
+              .get();
+            if (shopDoc.exists) {
+              const shopData = shopDoc.data();
+              order.shopRingkas = {
+                shopName: shopData.shopName || null,
+              };
+            }
+          }
+          return order;
+        })
+      );
+      fetchedOrders = ordersWithShopDetails;
+    }
+
+    return handleSuccess(
+      res,
+      200,
+      "Daftar pesanan berhasil diambil.",
+      fetchedOrders
+    );
+  } catch (error) {
+    console.error("Error getting orders list:", error);
+    return handleError(res, {
+      statusCode: 500,
+      message: "Gagal mengambil daftar pesanan.",
+      detail: error.message,
+    });
+  }
+};

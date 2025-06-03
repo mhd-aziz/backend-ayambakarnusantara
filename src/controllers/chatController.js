@@ -32,52 +32,101 @@ exports.startOrGetConversation = async (req, res) => {
     });
   }
 
-  const conversationsRef = firestore.collection("conversations");
+  // 1. Buat ID percakapan kanonikal
+  const participants = [initiatorUID, recipientUID].sort();
+  const conversationId = participants.join("_");
+
+  const conversationRef = firestore
+    .collection("conversations")
+    .doc(conversationId);
+  const usersRef = firestore.collection("users");
 
   try {
-    const querySnapshot = await conversationsRef
-      .where("participantUIDs", "array-contains", initiatorUID)
-      .get();
+    const conversationDoc = await conversationRef.get();
 
-    let existingConversation = null;
-    if (!querySnapshot.empty) {
-      for (const doc of querySnapshot.docs) {
-        const conversation = doc.data();
-        if (conversation.participantUIDs.includes(recipientUID)) {
-          existingConversation = conversation;
-          break;
+    if (conversationDoc.exists) {
+      let existingConversationData = conversationDoc.data();
+      if (!existingConversationData._id) {
+        existingConversationData._id = conversationDoc.id;
+      }
+
+      const [initiatorUserDoc, recipientUserDoc] = await Promise.all([
+        usersRef.doc(initiatorUID).get(),
+        usersRef.doc(recipientUID).get(),
+      ]);
+
+      let needsInfoUpdate = false;
+      const updatedParticipantInfo = {
+        ...(existingConversationData.participantInfo || {}),
+      };
+
+      if (initiatorUserDoc.exists) {
+        const initiatorData = initiatorUserDoc.data();
+        if (
+          updatedParticipantInfo[initiatorUID]?.displayName !==
+            initiatorData.displayName ||
+          updatedParticipantInfo[initiatorUID]?.photoURL !==
+            initiatorData.photoURL
+        ) {
+          updatedParticipantInfo[initiatorUID] = {
+            displayName: initiatorData.displayName || "Pengguna",
+            photoURL: initiatorData.photoURL || null,
+          };
+          needsInfoUpdate = true;
         }
       }
-    }
 
-    if (existingConversation) {
+      if (recipientUserDoc.exists) {
+        const recipientData = recipientUserDoc.data();
+        if (
+          updatedParticipantInfo[recipientUID]?.displayName !==
+            recipientData.displayName ||
+          updatedParticipantInfo[recipientUID]?.photoURL !==
+            recipientData.photoURL
+        ) {
+          updatedParticipantInfo[recipientUID] = {
+            displayName: recipientData.displayName || "Pengguna",
+            photoURL: recipientData.photoURL || null,
+          };
+          needsInfoUpdate = true;
+        }
+      }
+
+      if (needsInfoUpdate) {
+        await conversationRef.update({
+          participantInfo: updatedParticipantInfo,
+          updatedAt: FieldValue.serverTimestamp(), // Selalu update updatedAt jika ada info yang berubah
+        });
+        existingConversationData.participantInfo = updatedParticipantInfo;
+        // Note: `updatedAt` di existingConversationData akan menjadi representasi objek timestamp server
+        // Untuk mendapatkan nilai tanggal aktual, frontend mungkin perlu menunggu snapshot atau melakukan get ulang.
+        // Namun, untuk konsistensi, frontend idealnya bisa menangani objek timestamp server.
+      }
+
       return handleSuccess(
         res,
         200,
         "Percakapan sudah ada.",
-        existingConversation
+        existingConversationData
       );
     } else {
-      const newConversationId = uuidv4();
-      const conversationRef = conversationsRef.doc(newConversationId);
+      // Percakapan belum ada, buat baru
+      const initiatorUserDoc = await usersRef.doc(initiatorUID).get();
+      const recipientUserDoc = await usersRef.doc(recipientUID).get();
 
-      const usersRef = firestore.collection("users");
-      const initiatorDoc = await usersRef.doc(initiatorUID).get();
-      const recipientDoc = await usersRef.doc(recipientUID).get();
-
-      if (!initiatorDoc.exists || !recipientDoc.exists) {
+      if (!initiatorUserDoc.exists || !recipientUserDoc.exists) {
         return handleError(res, {
           statusCode: 404,
           message: "Satu atau kedua pengguna tidak ditemukan.",
         });
       }
 
-      const initiatorData = initiatorDoc.data();
-      const recipientData = recipientDoc.data();
+      const initiatorData = initiatorUserDoc.data();
+      const recipientData = recipientUserDoc.data();
 
       const newConversationData = {
-        _id: newConversationId,
-        participantUIDs: [initiatorUID, recipientUID].sort(),
+        _id: conversationId, // Gunakan ID kanonikal
+        participantUIDs: participants, // Sudah diurutkan
         participantInfo: {
           [initiatorUID]: {
             displayName: initiatorData.displayName || "Pengguna",
@@ -91,23 +140,39 @@ exports.startOrGetConversation = async (req, res) => {
         lastMessage: null,
         createdAt: FieldValue.serverTimestamp(),
         updatedAt: FieldValue.serverTimestamp(),
+        // Anda bisa menambahkan properti lain seperti unreadCounts jika perlu
+        // unreadCounts: { [initiatorUID]: 0, [recipientUID]: 0 }
       };
 
       await conversationRef.set(newConversationData);
+
+      // Untuk data yang dikembalikan, agar timestamp konsisten seperti saat get:
+      const createdConversationForResponse = {
+        ...newConversationData,
+        // Firestore akan mengisi createdAt dan updatedAt di server.
+        // Jika ingin mengembalikan nilai yang sudah di-resolve, Anda perlu get() lagi dokumennya.
+        // Namun, untuk respons API create, biasanya data yang di-set sudah cukup.
+        // Frontend dapat menghandle objek ServerTimestamp jika diperlukan.
+      };
+
       return handleSuccess(
         res,
         201,
         "Percakapan berhasil dimulai.",
-        newConversationData
+        createdConversationForResponse // Menggunakan data yang akan disimpan
       );
     }
   } catch (error) {
-    console.error("Error starting or getting conversation:", error);
-    return handleError(
-      res,
-      error,
-      "Gagal memulai atau mendapatkan percakapan."
+    console.error(
+      "Error starting or getting conversation:",
+      error.message,
+      error.stack
     );
+    return handleError(res, {
+      statusCode: 500, // Default error
+      message: error.message || "Gagal memulai atau mendapatkan percakapan.",
+      // Anda bisa menambahkan detail error jika diperlukan untuk logging internal
+    });
   }
 };
 

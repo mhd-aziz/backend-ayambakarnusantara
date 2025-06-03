@@ -169,7 +169,8 @@ exports.createProduct = async (req, res) => {
       productImageURL,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
-      // Tambahan fields jika perlu: ratings, soldCount, etc.
+      // Tambahan fields jika perlu: ratings, soldCount, name_lowercase (untuk search)
+      name_lowercase: name.toLowerCase(), // Tambahkan ini untuk search case-insensitive yang efisien
     };
 
     await newProductRef.set(newProductData);
@@ -185,52 +186,142 @@ exports.createProduct = async (req, res) => {
   }
 };
 
-// 2. Mendapatkan Semua Produk (Publik)
 exports.getAllProducts = async (req, res) => {
   try {
-    // Tambahkan query parameter untuk filter, sort, pagination jika diperlukan
-    const { category, sortBy, order = "asc", page = 1, limit = 10 } = req.query;
+    const {
+      searchById,
+      searchByName,
+      category,
+      sortBy,
+      order = "asc",
+      page = 1,
+      limit = 10,
+      nameCaseInsensitive = "true",
+    } = req.query;
+
     let productsQuery = firestore.collection("products");
+    let isSearchingById = false;
+    let allProductsData = [];
 
-    if (category) {
-      productsQuery = productsQuery.where("category", "==", category);
-    }
+    const isNameSearchCaseInsensitive = nameCaseInsensitive === "true";
 
-    if (sortBy) {
-      productsQuery = productsQuery.orderBy(sortBy, order);
+    if (searchById) {
+      productsQuery = productsQuery.where("_id", "==", searchById);
+      isSearchingById = true;
     } else {
-      productsQuery = productsQuery.orderBy("createdAt", "desc"); // Default sort
+      // Filter berdasarkan kategori SELALU diterapkan di Firestore jika ada
+      if (category) {
+        productsQuery = productsQuery.where("category", "==", category);
+      }
+
+      // Sorting awal di Firestore (sebelum filter nama "contains" di server)
+      // Jika sortBy adalah "name", sorting sebenarnya akan lebih akurat dilakukan di server
+      // setelah filter "contains". Namun, sorting awal bisa membantu.
+      if (sortBy && sortBy !== "name") {
+        // Jangan sort by name di Firestore jika akan difilter "contains"
+        productsQuery = productsQuery.orderBy(sortBy, order);
+      } else if (!sortBy) {
+        // Default sort jika sortBy tidak ada (dan bukan "name")
+        productsQuery = productsQuery.orderBy("createdAt", "desc");
+      }
+      // Jika sortBy === "name", kita akan sort di server setelah filtering.
     }
 
-    // Pagination
-    const pageNum = parseInt(page);
-    const limitNum = parseInt(limit);
+    const pageNum = parseInt(page, 10);
+    const limitNum = parseInt(limit, 10);
     const offset = (pageNum - 1) * limitNum;
 
-    const snapshot = await productsQuery.limit(limitNum).offset(offset).get();
+    let products = [];
+    let totalProducts = 0;
 
-    if (snapshot.empty) {
-      return handleSuccess(res, 200, "Belum ada produk yang tersedia.", []);
+    if (isSearchingById) {
+      const productSnapshot = await productsQuery.get();
+      if (!productSnapshot.empty) {
+        products = productSnapshot.docs.map((doc) => doc.data());
+        totalProducts = products.length;
+      }
+    } else {
+      // Ambil semua dokumen yang cocok dengan filter Firestore (misal, kategori)
+      const allMatchingDocsSnapshot = await productsQuery.get();
+      allProductsData = allMatchingDocsSnapshot.docs.map((doc) => doc.data());
+
+      // Lakukan filter "contains" untuk nama di server
+      if (searchByName) {
+        const searchTerm = isNameSearchCaseInsensitive
+          ? searchByName.toLowerCase()
+          : searchByName;
+        allProductsData = allProductsData.filter((product) => {
+          if (!product.name) return false;
+          const productName = isNameSearchCaseInsensitive
+            ? product.name.toLowerCase()
+            : product.name;
+          return productName.includes(searchTerm); // Selalu mode "contains"
+        });
+      }
+
+      // Lakukan sorting di server jika sortBy adalah 'name' (setelah filter "contains")
+      if (sortBy === "name") {
+        allProductsData.sort((a, b) => {
+          const nameA = isNameSearchCaseInsensitive
+            ? (a.name || "").toLowerCase() // handle jika name null/undefined
+            : a.name || "";
+          const nameB = isNameSearchCaseInsensitive
+            ? (b.name || "").toLowerCase()
+            : b.name || "";
+          if (order === "asc") {
+            return nameA.localeCompare(nameB);
+          } else {
+            return nameB.localeCompare(nameA);
+          }
+        });
+      }
+
+      totalProducts = allProductsData.length;
+      // Terapkan pagination pada data yang sudah difilter dan di-sort di server
+      products = allProductsData.slice(offset, offset + limitNum);
     }
 
-    const products = snapshot.docs.map((doc) => doc.data());
+    const totalPages = Math.ceil(totalProducts / limitNum);
 
-    // Untuk informasi total produk (opsional, untuk pagination di client)
-    const totalProductsSnapshot = await productsQuery.get(); // Ini bisa jadi query yang sama tanpa limit/offset untuk count yang akurat, atau Anda bisa menyimpannya di collection lain
-    const totalProducts = totalProductsSnapshot.size;
+    if (products.length === 0) {
+      let message = "Belum ada produk yang sesuai dengan kriteria pencarian.";
+      if (isSearchingById) {
+        message = "Produk dengan ID yang dicari tidak ditemukan.";
+      }
+      return handleSuccess(res, 200, message, {
+        products: [],
+        currentPage: pageNum,
+        totalPages: 0,
+        totalProducts: 0,
+      });
+    }
 
     return handleSuccess(res, 200, "Daftar produk berhasil diambil.", {
       products,
       currentPage: pageNum,
-      totalPages: Math.ceil(totalProducts / limitNum),
+      totalPages,
       totalProducts,
     });
   } catch (error) {
     console.error("Error getting all products:", error);
+    if (
+      error.message &&
+      error.message.includes("INVALID_ARGUMENT") &&
+      (error.message.includes("orderBy") ||
+        error.message.includes("inequality"))
+    ) {
+      return handleError(
+        res,
+        {
+          statusCode: 400,
+          message: `Kombinasi filter dan urutan tidak valid di Firestore. Error: ${error.message}`,
+        },
+        "Gagal mengambil daftar produk."
+      );
+    }
     return handleError(res, error, "Gagal mengambil daftar produk.");
   }
 };
-
 // 3. Mendapatkan Produk Milik Seller (Private)
 exports.getMyProducts = async (req, res) => {
   const uid = req.user?.uid;
@@ -255,7 +346,7 @@ exports.getMyProducts = async (req, res) => {
     const productsQuery = firestore
       .collection("products")
       .where("shopId", "==", shopId)
-      .orderBy("createdAt", "desc"); // Urutkan berdasarkan terbaru
+      .orderBy("createdAt", "desc");
 
     const snapshot = await productsQuery.get();
 
@@ -315,7 +406,6 @@ exports.getProductById = async (req, res) => {
   }
 };
 
-// 5. Memperbarui Produk (Hanya Seller Pemilik Produk)
 exports.updateProduct = async (req, res) => {
   const uid = req.user?.uid;
   const { productId } = req.params;
@@ -359,15 +449,12 @@ exports.updateProduct = async (req, res) => {
     const bucket = storage.bucket();
 
     if (req.file) {
-      // Jika ada file gambar baru diunggah
       if (currentProductData.productImageURL) {
-        // Hapus gambar produk lama jika ada
         await deleteProductImageFromStorage(
           currentProductData.productImageURL,
           bucket
         );
       }
-      // Unggah gambar produk baru
       const fileExtension = req.file.originalname.split(".").pop();
       const fileName = `product-images/${
         currentProductData.shopId
@@ -409,19 +496,25 @@ exports.updateProduct = async (req, res) => {
       fieldsToUpdate.productImageURL = null;
     }
 
-    if (name !== undefined && name.trim() !== currentProductData.name) {
-      if (name.trim() === "")
+    if (name !== undefined) {
+      const trimmedName = name.trim();
+      if (trimmedName === "") {
         return handleError(res, {
           statusCode: 400,
           message: "Nama produk tidak boleh kosong.",
         });
-      fieldsToUpdate.name = name.trim();
+      }
+      if (trimmedName !== currentProductData.name) {
+        fieldsToUpdate.name = trimmedName;
+        fieldsToUpdate.name_lowercase = trimmedName.toLowerCase();
+      }
     }
+
     if (
       description !== undefined &&
       description.trim() !== currentProductData.description
     ) {
-      fieldsToUpdate.description = description.trim(); // Deskripsi boleh kosong
+      fieldsToUpdate.description = description.trim();
     }
     if (price !== undefined) {
       const newPrice = parseFloat(price);
@@ -479,7 +572,6 @@ exports.updateProduct = async (req, res) => {
   }
 };
 
-// 6. Menghapus Produk (Hanya Seller Pemilik Produk)
 exports.deleteProduct = async (req, res) => {
   const uid = req.user?.uid;
   const { productId } = req.params;
@@ -517,7 +609,6 @@ exports.deleteProduct = async (req, res) => {
       });
     }
 
-    // Hapus gambar produk dari Storage jika ada
     if (productData.productImageURL) {
       const bucket = storage.bucket();
       await deleteProductImageFromStorage(productData.productImageURL, bucket);
@@ -525,11 +616,89 @@ exports.deleteProduct = async (req, res) => {
 
     await productDocRef.delete();
 
-    // Opsional: Hapus referensi produk dari tempat lain jika ada (misal: keranjang belanja pengguna)
-
     return handleSuccess(res, 200, "Produk berhasil dihapus.");
   } catch (error) {
     console.error("Error deleting product:", error);
     return handleError(res, error, "Gagal menghapus produk.");
+  }
+};
+
+exports.getProductRecommendations = async (req, res) => {
+  try {
+    const { limit = 10, minSumOfRatings = 4 } = req.query;
+
+    const numLimit = parseInt(limit, 10);
+    let numMinSumOfRatings = parseInt(minSumOfRatings, 10);
+
+    if (isNaN(numLimit) || numLimit <= 0 || numLimit > 50) {
+      return handleError(res, {
+        statusCode: 400,
+        message:
+          "Parameter 'limit' harus berupa angka positif dan tidak lebih dari 50.",
+      });
+    }
+
+    if (isNaN(numMinSumOfRatings) || numMinSumOfRatings < 0) {
+      numMinSumOfRatings = 4;
+    }
+    if (numMinSumOfRatings < 4) {
+      numMinSumOfRatings = 4;
+    }
+
+    let recommendationsQuery = firestore.collection("products");
+
+    recommendationsQuery = recommendationsQuery.where(
+      "sumOfRatings",
+      ">=",
+      numMinSumOfRatings
+    );
+
+    recommendationsQuery = recommendationsQuery
+      .orderBy("sumOfRatings", "desc")
+      .orderBy("ratingCount", "asc")
+      .limit(numLimit);
+
+    const snapshot = await recommendationsQuery.get();
+
+    const queryParamsForResponse = {
+      limit: numLimit,
+      minSumOfRatings: numMinSumOfRatings,
+    };
+
+    if (snapshot.empty) {
+      return handleSuccess(
+        res,
+        200,
+        `Tidak ada produk yang memenuhi kriteria rekomendasi (minimal sumOfRatings: ${numMinSumOfRatings}).`,
+        {
+          recommendations: [],
+          queryParams: queryParamsForResponse,
+        }
+      );
+    }
+
+    const recommendedProducts = snapshot.docs.map((doc) => doc.data());
+
+    return handleSuccess(res, 200, "Produk rekomendasi berhasil diambil.", {
+      recommendations: recommendedProducts,
+      totalRecommendations: recommendedProducts.length,
+      queryParams: queryParamsForResponse,
+    });
+  } catch (error) {
+    console.error("Error getting product recommendations:", error);
+    if (
+      error.code === "FAILED_PRECONDITION" &&
+      error.message.includes("index")
+    ) {
+      return handleError(
+        res,
+        {
+          statusCode: 500,
+          message: `Query memerlukan indeks komposit di Firestore. Detail: ${error.message}. Silakan buat indeks yang diperlukan melalui Firebase Console.`,
+        },
+        "Gagal mengambil rekomendasi produk karena konfigurasi database (memerlukan indeks)."
+      );
+    }
+    return handleError(res, error, "Gagal mengambil rekomendasi produk.");
   }
 };

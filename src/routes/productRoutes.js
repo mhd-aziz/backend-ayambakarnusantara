@@ -39,6 +39,7 @@ router.delete(
 );
 
 router.get("/", productController.getAllProducts); 
+router.get('/recommendations', productController.getProductRecommendations);
 router.get("/:productId", productController.getProductById);
 
 module.exports = router;
