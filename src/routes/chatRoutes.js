@@ -1,8 +1,8 @@
-// src/routes/chatRoutes.js
 const express = require("express");
 const router = express.Router();
 const chatController = require("../controllers/chatController");
 const { authenticateToken } = require("../middlewares/authMiddleware");
+const upload = require("../middlewares/multerConfig");
 
 router.use(authenticateToken);
 
@@ -12,6 +12,7 @@ router.get("/conversations", chatController.getUserConversations);
 
 router.post(
   "/conversations/:conversationId/messages",
+  upload.single('chatImage'),
   chatController.sendMessage
 );
 

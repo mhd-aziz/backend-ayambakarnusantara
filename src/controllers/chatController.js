@@ -1,14 +1,7 @@
-// src/controllers/chatController.js
-const { firestore, FieldValue } = require("../config/firebaseConfig");
+const { firestore, FieldValue, storage } = require("../config/firebaseConfig");
 const { handleSuccess, handleError } = require("../utils/responseHandler");
 const { v4: uuidv4 } = require("uuid");
 
-/**
- * @desc    Start a new conversation or get an existing one between two users.
- * @route   POST /api/chat/conversations
- * @access  Private
- * @body    { "recipientUID": "UID of the other user" }
- */
 exports.startOrGetConversation = async (req, res) => {
   const initiatorUID = req.user?.uid;
   const { recipientUID } = req.body;
@@ -32,7 +25,6 @@ exports.startOrGetConversation = async (req, res) => {
     });
   }
 
-  // 1. Buat ID percakapan kanonikal
   const participants = [initiatorUID, recipientUID].sort();
   const conversationId = participants.join("_");
 
@@ -95,12 +87,9 @@ exports.startOrGetConversation = async (req, res) => {
       if (needsInfoUpdate) {
         await conversationRef.update({
           participantInfo: updatedParticipantInfo,
-          updatedAt: FieldValue.serverTimestamp(), // Selalu update updatedAt jika ada info yang berubah
+          updatedAt: FieldValue.serverTimestamp(),
         });
         existingConversationData.participantInfo = updatedParticipantInfo;
-        // Note: `updatedAt` di existingConversationData akan menjadi representasi objek timestamp server
-        // Untuk mendapatkan nilai tanggal aktual, frontend mungkin perlu menunggu snapshot atau melakukan get ulang.
-        // Namun, untuk konsistensi, frontend idealnya bisa menangani objek timestamp server.
       }
 
       return handleSuccess(
@@ -110,7 +99,6 @@ exports.startOrGetConversation = async (req, res) => {
         existingConversationData
       );
     } else {
-      // Percakapan belum ada, buat baru
       const initiatorUserDoc = await usersRef.doc(initiatorUID).get();
       const recipientUserDoc = await usersRef.doc(recipientUID).get();
 
@@ -125,8 +113,8 @@ exports.startOrGetConversation = async (req, res) => {
       const recipientData = recipientUserDoc.data();
 
       const newConversationData = {
-        _id: conversationId, // Gunakan ID kanonikal
-        participantUIDs: participants, // Sudah diurutkan
+        _id: conversationId,
+        participantUIDs: participants,
         participantInfo: {
           [initiatorUID]: {
             displayName: initiatorData.displayName || "Pengguna",
@@ -140,26 +128,19 @@ exports.startOrGetConversation = async (req, res) => {
         lastMessage: null,
         createdAt: FieldValue.serverTimestamp(),
         updatedAt: FieldValue.serverTimestamp(),
-        // Anda bisa menambahkan properti lain seperti unreadCounts jika perlu
-        // unreadCounts: { [initiatorUID]: 0, [recipientUID]: 0 }
       };
 
       await conversationRef.set(newConversationData);
 
-      // Untuk data yang dikembalikan, agar timestamp konsisten seperti saat get:
       const createdConversationForResponse = {
         ...newConversationData,
-        // Firestore akan mengisi createdAt dan updatedAt di server.
-        // Jika ingin mengembalikan nilai yang sudah di-resolve, Anda perlu get() lagi dokumennya.
-        // Namun, untuk respons API create, biasanya data yang di-set sudah cukup.
-        // Frontend dapat menghandle objek ServerTimestamp jika diperlukan.
       };
 
       return handleSuccess(
         res,
         201,
         "Percakapan berhasil dimulai.",
-        createdConversationForResponse // Menggunakan data yang akan disimpan
+        createdConversationForResponse
       );
     }
   } catch (error) {
@@ -169,18 +150,12 @@ exports.startOrGetConversation = async (req, res) => {
       error.stack
     );
     return handleError(res, {
-      statusCode: 500, // Default error
+      statusCode: 500,
       message: error.message || "Gagal memulai atau mendapatkan percakapan.",
-      // Anda bisa menambahkan detail error jika diperlukan untuk logging internal
     });
   }
 };
 
-/**
- * @desc    Get all conversations for the authenticated user.
- * @route   GET /api/chat/conversations
- * @access  Private
- */
 exports.getUserConversations = async (req, res) => {
   const userUID = req.user?.uid;
 
@@ -215,16 +190,11 @@ exports.getUserConversations = async (req, res) => {
   }
 };
 
-/**
- * @desc    Send a message in a conversation.
- * @route   POST /api/chat/conversations/:conversationId/messages
- * @access  Private
- * @body    { "text": "Isi pesan" }
- */
 exports.sendMessage = async (req, res) => {
   const senderUID = req.user?.uid;
   const { conversationId } = req.params;
-  const { text } = req.body;
+  const { text, latitude, longitude } = req.body;
+  const imageFile = req.file;
 
   if (!senderUID) {
     return handleError(res, {
@@ -238,10 +208,10 @@ exports.sendMessage = async (req, res) => {
       message: "ID Percakapan diperlukan.",
     });
   }
-  if (!text || text.trim() === "") {
+  if (!text?.trim() && !imageFile && (!latitude || !longitude)) {
     return handleError(res, {
       statusCode: 400,
-      message: "Teks pesan tidak boleh kosong.",
+      message: "Konten pesan tidak boleh kosong.",
     });
   }
 
@@ -268,13 +238,62 @@ exports.sendMessage = async (req, res) => {
     }
 
     const newMessageRef = messagesRef.doc();
-    const newMessageData = {
+    let newMessageData = {
       _id: newMessageRef.id,
       senderUID: senderUID,
-      text: text.trim(),
       timestamp: FieldValue.serverTimestamp(),
+      text: null,
+      imageUrl: null,
+      location: null,
       type: "text",
     };
+    let lastMessageText = "";
+
+    if (imageFile) {
+      newMessageData.type = "image";
+      lastMessageText = text?.trim() || "Gambar";
+      newMessageData.text = text?.trim() || null;
+
+      const bucket = storage.bucket();
+      const fileExtension = imageFile.originalname.split(".").pop();
+      const fileName = `chat-images/${conversationId}/${
+        newMessageRef.id
+      }-${uuidv4()}.${fileExtension}`;
+      const fileUpload = bucket.file(fileName);
+
+      const blobStream = fileUpload.createWriteStream({
+        metadata: { contentType: imageFile.mimetype },
+        public: true,
+      });
+
+      await new Promise((resolve, reject) => {
+        blobStream.on("error", (error) => {
+          console.error("Kesalahan stream upload:", error);
+          reject(error);
+        });
+        blobStream.on("finish", () => {
+          newMessageData.imageUrl = `https://storage.googleapis.com/${bucket.name}/${fileName}`;
+          resolve();
+        });
+        blobStream.end(imageFile.buffer);
+      });
+    } else if (latitude && longitude) {
+      newMessageData.type = "location";
+      lastMessageText = "📍 Lokasi";
+      const lat = parseFloat(latitude);
+      const lon = parseFloat(longitude);
+      if (isNaN(lat) || isNaN(lon)) {
+        return handleError(res, {
+          statusCode: 400,
+          message: "Latitude dan Longitude harus berupa angka.",
+        });
+      }
+      newMessageData.location = { latitude: lat, longitude: lon };
+    } else {
+      newMessageData.type = "text";
+      newMessageData.text = text.trim();
+      lastMessageText = text.trim();
+    }
 
     const batch = firestore.batch();
     batch.set(newMessageRef, newMessageData);
@@ -282,8 +301,8 @@ exports.sendMessage = async (req, res) => {
     const currentTimestamp = FieldValue.serverTimestamp();
     batch.update(conversationRef, {
       lastMessage: {
-        text: newMessageData.text,
-        senderUID: newMessageData.senderUID,
+        text: lastMessageText,
+        senderUID: senderUID,
         timestamp: currentTimestamp,
       },
       updatedAt: currentTimestamp,
@@ -305,16 +324,11 @@ exports.sendMessage = async (req, res) => {
     );
   } catch (error) {
     console.error("Error sending message:", error);
+    console.error("DETAIL ERROR:", JSON.stringify(error, null, 2));
     return handleError(res, error, "Gagal mengirim pesan.");
   }
 };
 
-/**
- * @desc    Get messages for a specific conversation.
- * @route   GET /api/chat/conversations/:conversationId/messages
- * @access  Private
- * @query   ?limit=20&beforeTimestamp=ISO_STRING (for pagination)
- */
 exports.getConversationMessages = async (req, res) => {
   const userUID = req.user?.uid;
   const { conversationId } = req.params;
@@ -391,11 +405,6 @@ exports.getConversationMessages = async (req, res) => {
   }
 };
 
-/**
- * @desc    Mark all messages in a conversation as read for the current user.
- * @route   PATCH /api/chat/conversations/:conversationId/read
- * @access  Private
- */
 exports.markConversationAsRead = async (req, res) => {
   const userUID = req.user?.uid;
   const { conversationId } = req.params;
