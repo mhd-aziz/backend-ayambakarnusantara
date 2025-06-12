@@ -456,3 +456,89 @@ exports.getRatingsForProduct = async (req, res) => {
     );
   }
 };
+
+exports.getRatings = async (req, res) => {
+  try {
+    const {
+      productId,
+      shopId,
+      ratingValue,
+      limit = "10",
+      sortBy = "createdAt",
+      sortOrder = "desc",
+      lastVisible,
+    } = req.query;
+
+    let ratingsQuery = firestore.collection("ratings");
+
+    // Menerapkan filter berdasarkan query params
+    if (productId) {
+      ratingsQuery = ratingsQuery.where("productId", "==", productId);
+    }
+    if (shopId) {
+      ratingsQuery = ratingsQuery.where("shopId", "==", shopId);
+    }
+    if (ratingValue) {
+      const numRating = parseInt(ratingValue);
+      if (!isNaN(numRating) && numRating >= 1 && numRating <= 5) {
+        ratingsQuery = ratingsQuery.where("ratingValue", "==", numRating);
+      } else {
+        return handleError(res, {
+          statusCode: 400,
+          message: "Parameter ratingValue tidak valid. Gunakan angka 1-5.",
+        });
+      }
+    }
+
+    // Validasi dan terapkan sorting
+    const validSortOrder = sortOrder.toLowerCase() === "asc" ? "asc" : "desc";
+    ratingsQuery = ratingsQuery.orderBy(sortBy, validSortOrder);
+
+    // Menerapkan paginasi jika 'lastVisible' disediakan
+    if (lastVisible) {
+      const lastVisibleDoc = await firestore
+        .collection("ratings")
+        .doc(lastVisible)
+        .get();
+      if (lastVisibleDoc.exists) {
+        ratingsQuery = ratingsQuery.startAfter(lastVisibleDoc);
+      }
+    }
+
+    // Menerapkan limit
+    const numLimit = parseInt(limit, 10);
+    ratingsQuery = ratingsQuery.limit(isNaN(numLimit) ? 10 : numLimit);
+
+    const snapshot = await ratingsQuery.get();
+
+    if (snapshot.empty) {
+      return handleSuccess(res, 200, "Tidak ada rating yang ditemukan.", {
+        ratings: [],
+        nextCursor: null,
+      });
+    }
+
+    const ratings = snapshot.docs.map((doc) => doc.data());
+
+    const lastDocInBatch = snapshot.docs[snapshot.docs.length - 1];
+    const nextCursor = lastDocInBatch ? lastDocInBatch.id : null;
+
+    return handleSuccess(res, 200, "Rating berhasil diambil.", {
+      ratings,
+      nextCursor,
+    });
+  } catch (error) {
+    console.error("Error getting public ratings:", error);
+    if (error.code === "failed-precondition") {
+      return handleError(res, {
+        statusCode: 400,
+        message: `Query membutuhkan indeks komposit. Silakan buat indeks di Firebase Console. Pesan error asli: ${error.message}`,
+      });
+    }
+    return handleError(
+      res,
+      { statusCode: 500 },
+      "Gagal mengambil data rating."
+    );
+  }
+};
