@@ -26,4 +26,8 @@ router.delete(
   ratingController.deleteRating
 );
 
+router.get(
+  "/",
+  ratingController.getRatings
+);
 module.exports = router;
