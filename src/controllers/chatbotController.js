@@ -133,7 +133,6 @@ exports.forwardToRasa = async (req, res) => {
   }
 };
 
-// Fungsi getChatHistory dan clearChatHistory tetap sama
 exports.getChatHistory = async (req, res) => {
   const userId = req.user?.uid;
   if (!userId) {
@@ -159,15 +158,26 @@ exports.getChatHistory = async (req, res) => {
     }
 
     const historyData = doc.data();
+    let messages = historyData.messages || [];
+
+    if (messages.length > 20) {
+      messages = messages.slice(-20);
+    }
+
     return handleSuccess(
       res,
       200,
       "Riwayat percakapan berhasil diambil.",
-      historyData.messages || []
+      messages
     );
   } catch (error) {
     console.error("Error mengambil riwayat percakapan:", error);
-    return handleError(res, error, "Gagal mengambil riwayat percakapan.");
+    const errorMessage = error.message || "Gagal mengambil riwayat percakapan.";
+    return handleError(res, {
+      statusCode: 500,
+      message: errorMessage,
+      errorDetails: error,
+    });
   }
 };
 

@@ -1,12 +1,6 @@
-// src/controllers/ratingController.js
 const { firestore } = require("../config/firebaseConfig");
 const { handleSuccess, handleError } = require("../utils/responseHandler");
 
-/**
- * @desc    Add a rating and review for a product. Updates product and shop aggregates.
- * @route   POST /api/ratings/:productId
- * @access  Private (Authenticated Users)
- */
 exports.addRating = async (req, res) => {
   const userId = req.user?.uid;
   const { productId } = req.params;
@@ -39,7 +33,6 @@ exports.addRating = async (req, res) => {
   const userRef = firestore.collection("users").doc(userId);
 
   try {
-    // Validasi di luar transaksi terlebih dahulu
     const orderDoc = await orderRef.get();
     if (!orderDoc.exists) {
       return handleError(res, {
@@ -61,7 +54,7 @@ exports.addRating = async (req, res) => {
         message: `Produk dengan ID ${productId} tidak ditemukan dalam pesanan ini.`,
       });
     }
-    const completedOrderStatuses = ["COMPLETED", "DELIVERED"]; // Sesuaikan jika perlu
+    const completedOrderStatuses = ["COMPLETED", "DELIVERED"];
     if (!completedOrderStatuses.includes(orderData.orderStatus)) {
       return handleError(res, {
         statusCode: 403,
@@ -91,7 +84,7 @@ exports.addRating = async (req, res) => {
       : "Pengguna Anonim";
     const userPhotoURL = userDoc.exists ? userDoc.data().photoURL : null;
 
-    const tempProductDoc = await productRef.get(); // Baca shopId dari produk di luar transaksi jika hanya untuk validasi awal
+    const tempProductDoc = await productRef.get();
     if (!tempProductDoc.exists) {
       return handleError(res, {
         statusCode: 404,
@@ -105,9 +98,9 @@ exports.addRating = async (req, res) => {
         message: "Produk tidak memiliki informasi toko (shopId).",
       });
     }
-    const shopRef = firestore.collection("shops").doc(productShopId); // Definisikan shopRef di sini
+    const shopRef = firestore.collection("shops").doc(productShopId);
 
-    const newRatingRef = ratingsCollection.doc(); // Buat ref untuk rating baru di luar transaksi agar ID-nya bisa disimpan
+    const newRatingRef = ratingsCollection.doc();
     const ratingData = {
       ratingId: newRatingRef.id,
       productId: productId,
@@ -122,28 +115,23 @@ exports.addRating = async (req, res) => {
       updatedAt: new Date().toISOString(),
     };
 
-    // Transaksi Firestore
     await firestore.runTransaction(async (transaction) => {
-      // --- TAHAP BACA (SEMUA GET DI AWAL) ---
       const productDocTransaction = await transaction.get(productRef);
-      const shopDocTransaction = await transaction.get(shopRef); // Pindahkan GET shop ke sini
+      const shopDocTransaction = await transaction.get(shopRef);
 
       if (!productDocTransaction.exists) {
         throw {
-          // Error ini akan ditangkap oleh catch di luar transaksi
           statusCode: 404,
           message: "Produk (dalam transaksi) tidak ditemukan.",
         };
       }
       if (!shopDocTransaction.exists) {
         throw {
-          // Error ini akan ditangkap oleh catch di luar transaksi
           statusCode: 404,
           message: "Toko (dalam transaksi) tidak ditemukan.",
         };
       }
 
-      // --- TAHAP PERHITUNGAN & PERSIAPAN WRITE ---
       const productData = productDocTransaction.data();
       const currentProductSum = productData.sumOfRatings || 0;
       const currentProductCount = productData.ratingCount || 0;
@@ -158,7 +146,6 @@ exports.addRating = async (req, res) => {
       const newShopTotalCount = currentShopTotalCount + 1;
       const newShopAverage = newShopTotalSum / newShopTotalCount;
 
-      // --- TAHAP WRITE (SEMUA SET/UPDATE/DELETE DI AKHIR) ---
       transaction.update(productRef, {
         sumOfRatings: newProductSum,
         ratingCount: newProductCount,
@@ -171,7 +158,7 @@ exports.addRating = async (req, res) => {
         averageShopRating: parseFloat(newShopAverage.toFixed(2)),
       });
 
-      transaction.set(newRatingRef, ratingData); // Gunakan newRatingRef yang sudah didefinisikan di luar
+      transaction.set(newRatingRef, ratingData);
     });
 
     return handleSuccess(res, 201, "Rating berhasil ditambahkan.", ratingData);
@@ -180,7 +167,6 @@ exports.addRating = async (req, res) => {
     if (error.statusCode) {
       return handleError(res, error);
     }
-    // Menggunakan error.message jika tersedia, agar lebih informatif
     return handleError(
       res,
       { statusCode: 500 },
@@ -191,11 +177,6 @@ exports.addRating = async (req, res) => {
   }
 };
 
-/**
- * @desc    Update an existing rating. Updates product and shop aggregates.
- * @route   PUT /api/ratings/:ratingId
- * @access  Private (Owner of the rating)
- */
 exports.updateRating = async (req, res) => {
   const userId = req.user?.uid;
   const { ratingId } = req.params;
@@ -226,14 +207,12 @@ exports.updateRating = async (req, res) => {
 
   try {
     await firestore.runTransaction(async (transaction) => {
-      // --- TAHAP BACA (SEMUA GET DI AWAL) ---
       const ratingDocTransaction = await transaction.get(ratingRef);
       if (!ratingDocTransaction.exists) {
         throw { statusCode: 404, message: "Rating tidak ditemukan." };
       }
       const oldRatingData = ratingDocTransaction.data();
 
-      // Otorisasi Pengguna
       if (oldRatingData.userId !== userId) {
         throw {
           statusCode: 403,
@@ -256,7 +235,6 @@ exports.updateRating = async (req, res) => {
       const productRef = firestore.collection("products").doc(productId);
       const shopRef = firestore.collection("shops").doc(shopId);
 
-      // Lanjutkan membaca product dan shop
       const productDocTransaction = await transaction.get(productRef);
       const shopDocTransaction = await transaction.get(shopRef);
 
@@ -273,11 +251,9 @@ exports.updateRating = async (req, res) => {
         };
       }
 
-      // --- TAHAP PERHITUNGAN & PERSIAPAN WRITE ---
       const productData = productDocTransaction.data();
       const newProductSum =
         (productData.sumOfRatings || 0) - oldRatingValue + numRatingValue;
-      // ratingCount tidak berubah saat update rating
       const newProductAverage =
         productData.ratingCount > 0
           ? newProductSum / productData.ratingCount
@@ -286,23 +262,19 @@ exports.updateRating = async (req, res) => {
       const shopData = shopDocTransaction.data();
       const newShopTotalSum =
         (shopData.totalSumOfRatings || 0) - oldRatingValue + numRatingValue;
-      // totalRatingCount tidak berubah saat update rating
       const newShopAverage =
         shopData.totalRatingCount > 0
           ? newShopTotalSum / shopData.totalRatingCount
           : 0;
 
-      // --- TAHAP WRITE (SEMUA SET/UPDATE/DELETE DI AKHIR) ---
       transaction.update(productRef, {
         sumOfRatings: newProductSum,
         averageRating: parseFloat(newProductAverage.toFixed(2)),
-        // updatedAt: new Date().toISOString(), // Opsional: update timestamp produk
       });
 
       transaction.update(shopRef, {
         totalSumOfRatings: newShopTotalSum,
         averageShopRating: parseFloat(newShopAverage.toFixed(2)),
-        // updatedAt: new Date().toISOString(), // Opsional: update timestamp toko
       });
 
       transaction.update(ratingRef, {
@@ -335,11 +307,6 @@ exports.updateRating = async (req, res) => {
   }
 };
 
-/**
- * @desc    Delete an existing rating. Updates product and shop aggregates.
- * @route   DELETE /api/ratings/:ratingId
- * @access  Private (Owner of the rating)
- */
 exports.deleteRating = async (req, res) => {
   const userId = req.user?.uid;
   const { ratingId } = req.params;
@@ -361,69 +328,77 @@ exports.deleteRating = async (req, res) => {
 
   try {
     await firestore.runTransaction(async (transaction) => {
-      const ratingDocTransaction = await transaction.get(ratingRef);
-      if (!ratingDocTransaction.exists) {
+      const ratingDoc = await transaction.get(ratingRef);
+      if (!ratingDoc.exists) {
         throw { statusCode: 404, message: "Rating tidak ditemukan." };
       }
-      const ratingDataToDelete = ratingDocTransaction.data();
+      const ratingData = ratingDoc.data();
 
-      if (ratingDataToDelete.userId !== userId) {
+      if (ratingData.userId !== userId) {
         throw {
           statusCode: 403,
           message: "Anda tidak berhak menghapus rating ini.",
         };
       }
 
-      const deletedRatingValue = ratingDataToDelete.ratingValue;
-      const productId = ratingDataToDelete.productId;
-      const shopId = ratingDataToDelete.shopId;
+      const { productId, shopId, ratingValue: deletedRatingValue } = ratingData;
 
-      if (!shopId) {
+      if (!productId || !shopId) {
         throw {
           statusCode: 500,
           message:
-            "Rating tidak memiliki informasi toko (shopId) untuk update agregat.",
+            "Data rating tidak lengkap (productId atau shopId tidak ada).",
         };
       }
 
       const productRef = firestore.collection("products").doc(productId);
       const shopRef = firestore.collection("shops").doc(shopId);
 
-      // Update Product
-      const productDocTransaction = await transaction.get(productRef);
-      if (productDocTransaction.exists) {
-        // Produk mungkin sudah dihapus, tangani dengan baik
-        const productData = productDocTransaction.data();
+      const [productDoc, shopDoc] = await Promise.all([
+        transaction.get(productRef),
+        transaction.get(shopRef),
+      ]);
+
+      let newProductData = {};
+      if (productDoc.exists) {
+        const productData = productDoc.data();
         const newProductSum =
           (productData.sumOfRatings || 0) - deletedRatingValue;
         const newProductCount = (productData.ratingCount || 0) - 1;
         const newProductAverage =
           newProductCount > 0 ? newProductSum / newProductCount : 0;
-        transaction.update(productRef, {
-          sumOfRatings: newProductSum < 0 ? 0 : newProductSum, // pastikan tidak negatif
-          ratingCount: newProductCount < 0 ? 0 : newProductCount, // pastikan tidak negatif
+
+        newProductData = {
+          sumOfRatings: Math.max(0, newProductSum),
+          ratingCount: Math.max(0, newProductCount),
           averageRating: parseFloat(newProductAverage.toFixed(2)),
-        });
+        };
       }
 
-      // Update Shop
-      const shopDocTransaction = await transaction.get(shopRef);
-      if (shopDocTransaction.exists) {
-        // Toko mungkin sudah dihapus
-        const shopData = shopDocTransaction.data();
+      let newShopData = {};
+      if (shopDoc.exists) {
+        const shopData = shopDoc.data();
         const newShopTotalSum =
           (shopData.totalSumOfRatings || 0) - deletedRatingValue;
         const newShopTotalCount = (shopData.totalRatingCount || 0) - 1;
         const newShopAverage =
           newShopTotalCount > 0 ? newShopTotalSum / newShopTotalCount : 0;
-        transaction.update(shopRef, {
-          totalSumOfRatings: newShopTotalSum < 0 ? 0 : newShopTotalSum,
-          totalRatingCount: newShopTotalCount < 0 ? 0 : newShopTotalCount,
+
+        newShopData = {
+          totalSumOfRatings: Math.max(0, newShopTotalSum),
+          totalRatingCount: Math.max(0, newShopTotalCount),
           averageShopRating: parseFloat(newShopAverage.toFixed(2)),
-        });
+        };
       }
 
-      // Delete Rating
+      if (productDoc.exists) {
+        transaction.update(productRef, newProductData);
+      }
+
+      if (shopDoc.exists) {
+        transaction.update(shopRef, newShopData);
+      }
+
       transaction.delete(ratingRef);
     });
 
@@ -433,19 +408,13 @@ exports.deleteRating = async (req, res) => {
     if (error.statusCode) {
       return handleError(res, error);
     }
-    return handleError(
-      res,
-      { statusCode: 500 },
-      `Gagal menghapus rating: ${error.message}`
-    );
+    return handleError(res, {
+      statusCode: 500,
+      message: `Gagal menghapus rating: ${error.message}`,
+    });
   }
 };
 
-/**
- * @desc    Get all ratings for a specific product.
- * @route   GET /api/ratings/:productId
- * @access  Public
- */
 exports.getRatingsForProduct = async (req, res) => {
   const { productId } = req.params;
 
@@ -473,13 +442,9 @@ exports.getRatingsForProduct = async (req, res) => {
       .get();
 
     const ratings = ratingsQuery.docs.map((doc) => doc.data());
-    // productDetails bisa diambil dari productDoc.data()
-    // Jika Anda juga ingin menampilkan info user di tiap rating (dan tidak denormalisasi),
-    // Anda perlu melakukan query tambahan di sini. Dengan denormalisasi (userDisplayName, userPhotoURL di doc rating),
-    // ini sudah cukup.
 
     return handleSuccess(res, 200, "Rating produk berhasil diambil.", {
-      productDetails: productDoc.data(), // Mengirim juga detail produk (termasuk avgRatingnya)
+      productDetails: productDoc.data(),
       ratings: ratings,
     });
   } catch (error) {
