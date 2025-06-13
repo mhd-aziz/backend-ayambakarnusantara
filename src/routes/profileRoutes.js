@@ -1,4 +1,3 @@
-// src/routes/profileRoutes.js
 const express = require("express");
 const router = express.Router();
 const profileController = require("../controllers/profileController");
@@ -19,5 +18,7 @@ router.delete(
   authenticateToken,
   profileController.deleteProfilePhoto
 );
+
+router.post("/fcm-token", authenticateToken, profileController.addFcmToken);
 
 module.exports = router;

@@ -1,5 +1,10 @@
 // src/controllers/profileController.js
-const { firestore, auth, storage } = require("../config/firebaseConfig");
+const {
+  firestore,
+  auth,
+  storage,
+  FieldValue,
+} = require("../config/firebaseConfig");
 const { handleSuccess, handleError } = require("../utils/responseHandler");
 const { v4: uuidv4 } = require("uuid");
 
@@ -215,7 +220,7 @@ exports.deleteProfilePhoto = async (req, res) => {
     }
 
     const bucket = storage.bucket();
-    await deleteOldStorageFile(currentPhotoURL, bucket); 
+    await deleteOldStorageFile(currentPhotoURL, bucket);
 
     // Update Firestore
     await userDocRef.update({
@@ -410,3 +415,47 @@ async function processProfileUpdates(
     );
   }
 }
+
+exports.addFcmToken = async (req, res) => {
+  const uid = req.user?.uid;
+  const { token } = req.body;
+
+  if (!uid) {
+    return handleError(res, {
+      statusCode: 401,
+      message: "Otentikasi diperlukan.",
+    });
+  }
+
+  if (!token || typeof token !== "string" || token.trim() === "") {
+    return handleError(res, {
+      statusCode: 400,
+      message: "FCM token diperlukan dan harus berupa string.",
+    });
+  }
+
+  try {
+    const userDocRef = firestore.collection("users").doc(uid);
+    await userDocRef.update({
+      fcmTokens: FieldValue.arrayUnion(token),
+      updatedAt: new Date().toISOString(),
+    });
+
+    return handleSuccess(res, 200, "Token FCM berhasil didaftarkan.");
+  } catch (error) {
+    console.error(`Error adding FCM token for user ${uid}:`, error);
+    if (error.code === 5) {
+      try {
+        await userDocRef.set({ fcmTokens: [token] }, { merge: true });
+        return handleSuccess(
+          res,
+          200,
+          "Token FCM berhasil didaftarkan untuk pertama kali."
+        );
+      } catch (set_error) {
+        return handleError(res, set_error, "Gagal mendaftarkan token FCM.");
+      }
+    }
+    return handleError(res, error, "Gagal mendaftarkan token FCM.");
+  }
+};

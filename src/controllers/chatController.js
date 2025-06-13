@@ -1,5 +1,6 @@
 const { firestore, FieldValue, storage } = require("../config/firebaseConfig");
 const { handleSuccess, handleError } = require("../utils/responseHandler");
+const { sendNotification } = require("./notificationController");
 const { v4: uuidv4 } = require("uuid");
 
 exports.startOrGetConversation = async (req, res) => {
@@ -237,6 +238,10 @@ exports.sendMessage = async (req, res) => {
       });
     }
 
+    const recipientUID = conversationData.participantUIDs.find(
+      (uid) => uid !== senderUID
+    );
+
     const newMessageRef = messagesRef.doc();
     let newMessageData = {
       _id: newMessageRef.id,
@@ -315,6 +320,17 @@ exports.sendMessage = async (req, res) => {
       timestamp: new Date().toISOString(),
       _id: newMessageRef.id,
     };
+
+    const senderInfo = conversationData.participantInfo[senderUID];
+    const senderName = senderInfo ? senderInfo.displayName : "Seseorang";
+
+    const notificationPayload = {
+      userId: recipientUID,
+      title: `Pesan baru dari ${senderName}`,
+      body: lastMessageText,
+      data: { conversationId: conversationId, type: "NEW_MESSAGE" },
+    };
+    await sendNotification(notificationPayload);
 
     return handleSuccess(
       res,
