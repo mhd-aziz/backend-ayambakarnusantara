@@ -14,6 +14,7 @@ const paymentRoutes = require("./routes/paymentRoutes");
 const ratingRoutes = require("./routes/ratingRoutes");
 const chatbotRoutes = require("./routes/chatbotRoutes");
 const chatRoutes = require("./routes/chatRoutes");
+const notificationsRoutes = require("./routes/notificationRoutes");
 require("./config/firebaseConfig");
 
 const { handleError } = require("./utils/responseHandler");
@@ -83,6 +84,7 @@ app.use("/payment", paymentRoutes);
 app.use("/rating", ratingRoutes);
 app.use("/chatbot", chatbotRoutes);
 app.use("/chat", chatRoutes);
+app.use("/notification", notificationsRoutes);
 
 app.use((err, req, res, next) => {
   if (res.headersSent) {

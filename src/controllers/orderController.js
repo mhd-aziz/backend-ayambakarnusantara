@@ -1,5 +1,6 @@
 const { firestore, storage } = require("../config/firebaseConfig");
 const { handleSuccess, handleError } = require("../utils/responseHandler");
+const { sendNotification } = require("./notificationController");
 const { FieldValue } = require("firebase-admin/firestore");
 const path = require("path");
 
@@ -779,6 +780,18 @@ exports.updateOrderStatusBySeller = async (req, res) => {
     };
 
     await orderRef.update(updatePayload);
+
+    const customerId = orderData.userId;
+    const notificationPayload = {
+      userId: customerId,
+      title: "Status Pesanan Diperbarui!",
+      body: `Status pesanan #${orderId.substring(
+        0,
+        20
+      )} kini adalah ${normalizedNewStatus}.`,
+      data: { orderId: orderId, type: "ORDER_STATUS_UPDATE" },
+    };
+    await sendNotification(notificationPayload);
 
     const updatedOrderDoc = await orderRef.get();
     return handleSuccess(

@@ -1,4 +1,3 @@
-// src/middlewares/authMiddleware.js
 const { auth, firestore } = require("../config/firebaseConfig");
 const { handleError } = require("../utils/responseHandler");
 

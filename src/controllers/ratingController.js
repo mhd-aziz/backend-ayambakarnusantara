@@ -471,7 +471,6 @@ exports.getRatings = async (req, res) => {
 
     let ratingsQuery = firestore.collection("ratings");
 
-    // Menerapkan filter berdasarkan query params
     if (productId) {
       ratingsQuery = ratingsQuery.where("productId", "==", productId);
     }
@@ -490,11 +489,9 @@ exports.getRatings = async (req, res) => {
       }
     }
 
-    // Validasi dan terapkan sorting
     const validSortOrder = sortOrder.toLowerCase() === "asc" ? "asc" : "desc";
     ratingsQuery = ratingsQuery.orderBy(sortBy, validSortOrder);
 
-    // Menerapkan paginasi jika 'lastVisible' disediakan
     if (lastVisible) {
       const lastVisibleDoc = await firestore
         .collection("ratings")
@@ -505,7 +502,6 @@ exports.getRatings = async (req, res) => {
       }
     }
 
-    // Menerapkan limit
     const numLimit = parseInt(limit, 10);
     ratingsQuery = ratingsQuery.limit(isNaN(numLimit) ? 10 : numLimit);
 
@@ -519,7 +515,6 @@ exports.getRatings = async (req, res) => {
     }
 
     const ratings = snapshot.docs.map((doc) => doc.data());
-
     const lastDocInBatch = snapshot.docs[snapshot.docs.length - 1];
     const nextCursor = lastDocInBatch ? lastDocInBatch.id : null;
 
