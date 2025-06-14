@@ -44,6 +44,7 @@ exports.createOrder = async (req, res) => {
     const cartData = cartDoc.data();
     const orderItems = [];
     let calculatedTotalPrice = 0;
+    const shopIds = new Set();
 
     const productChecks = cartData.items.map(async (item) => {
       const productRef = productsCollection.doc(item.productId);
@@ -63,6 +64,11 @@ exports.createOrder = async (req, res) => {
           message: `Stok untuk produk ${item.name} tidak mencukupi. Sisa stok: ${productData.stock}, diminta: ${item.quantity}.`,
         };
       }
+
+      if (productData.shopId) {
+        shopIds.add(productData.shopId);
+      }
+
       orderItems.push({
         productId: item.productId,
         shopId: item.shopId,
@@ -139,6 +145,40 @@ exports.createOrder = async (req, res) => {
     });
 
     await batch.commit();
+
+    try {
+      if (shopIds.size > 0) {
+        const customerDoc = await firestore
+          .collection("users")
+          .doc(userId)
+          .get();
+        const customerName = customerDoc.exists
+          ? customerDoc.data().displayName
+          : "Seorang pelanggan";
+
+        const shopId = shopIds.values().next().value;
+        const shopDoc = await firestore.collection("shops").doc(shopId).get();
+
+        if (shopDoc.exists) {
+          const sellerUID = shopDoc.data().ownerUID;
+          const notificationPayload = {
+            userId: sellerUID,
+            title: "Pesanan Baru Diterima!",
+            body: `${customerName} telah membuat pesanan baru #${newOrderRef.id.substring(
+              0,
+              20
+            )}.`,
+            data: { orderId: newOrderRef.id, type: "NEW_ORDER" },
+          };
+          await sendNotification(notificationPayload);
+        }
+      }
+    } catch (notifError) {
+      console.error(
+        "Gagal mengirim notifikasi pesanan baru ke seller:",
+        notifError
+      );
+    }
 
     return handleSuccess(res, 201, "Pesanan berhasil dibuat.", newOrderData);
   } catch (error) {
@@ -591,22 +631,41 @@ exports.cancelOrder = async (req, res) => {
       updatedAt: new Date().toISOString(),
     });
 
-    const productStockUpdates = orderData.items.map(async (item) => {
+    orderData.items.forEach((item) => {
       const productRef = productsCollection.doc(item.productId);
-      const productDoc = await productRef.get();
-      if (productDoc.exists) {
-        batch.update(productRef, {
-          stock: FieldValue.increment(item.quantity),
-        });
-      } else {
-        console.warn(
-          `Produk dengan ID ${item.productId} tidak ditemukan saat mencoba mengembalikan stok untuk pesanan ${orderId} yang dibatalkan.`
-        );
-      }
+      batch.update(productRef, {
+        stock: FieldValue.increment(item.quantity),
+      });
     });
-    await Promise.all(productStockUpdates);
 
     await batch.commit();
+
+    try {
+      if (orderData.items && orderData.items.length > 0) {
+        const shopId = orderData.items[0].shopId;
+        const shopDoc = await firestore.collection("shops").doc(shopId).get();
+
+        if (shopDoc.exists) {
+          const sellerUID = shopDoc.data().ownerUID;
+          const notificationPayload = {
+            userId: sellerUID,
+            title: "Pesanan Dibatalkan",
+            body: `Pesanan #${orderId.substring(
+              0,
+              20
+            )} telah dibatalkan oleh pelanggan.`,
+            data: { orderId: orderId, type: "ORDER_CANCELLED" },
+          };
+          await sendNotification(notificationPayload);
+        }
+      }
+    } catch (notifError) {
+      console.error(
+        "Gagal mengirim notifikasi pembatalan pesanan ke seller:",
+        notifError
+      );
+    }
+
     const updatedOrderDoc = await orderRef.get();
 
     return handleSuccess(
@@ -831,26 +890,8 @@ exports.confirmPayAtStorePaymentBySeller = async (req, res) => {
   }
 
   const orderRef = firestore.collection("orders").doc(orderId);
-  const usersCollection = firestore.collection("users");
 
   try {
-    const sellerUserDocRef = usersCollection.doc(sellerId);
-    const sellerUserDoc = await sellerUserDocRef.get();
-
-    if (!sellerUserDoc.exists || sellerUserDoc.data().role !== "seller") {
-      return handleError(res, {
-        statusCode: 403,
-        message: "Hanya seller yang dapat melakukan tindakan ini.",
-      });
-    }
-    const sellerShopId = sellerUserDoc.data().shopId;
-    if (!sellerShopId) {
-      return handleError(res, {
-        statusCode: 403,
-        message: "Seller tidak memiliki informasi toko yang valid.",
-      });
-    }
-
     const orderDoc = await orderRef.get();
     if (!orderDoc.exists) {
       return handleError(res, {
@@ -860,62 +901,45 @@ exports.confirmPayAtStorePaymentBySeller = async (req, res) => {
     }
     const orderData = orderDoc.data();
 
-    const orderBelongsToSellerShop =
-      orderData.items &&
-      orderData.items.length > 0 &&
-      orderData.items.every((item) => item.shopId === sellerShopId);
-
-    if (!orderBelongsToSellerShop) {
-      return handleError(res, {
-        statusCode: 403,
-        message:
-          "Anda tidak berhak melakukan tindakan ini pada pesanan yang bukan milik toko Anda.",
-      });
+    const sellerUserDoc = await firestore
+      .collection("users")
+      .doc(sellerId)
+      .get();
+    if (
+      !sellerUserDoc.exists ||
+      sellerUserDoc.data().role !== "seller" ||
+      !orderData.items.every(
+        (item) => item.shopId === sellerUserDoc.data().shopId
+      )
+    ) {
+      return handleError(res, { statusCode: 403, message: "Akses ditolak." });
     }
 
     if (orderData.paymentDetails.method.toUpperCase() !== "PAY_AT_STORE") {
       return handleError(res, {
         statusCode: 400,
-        message:
-          "Konfirmasi pembayaran ini hanya berlaku untuk pesanan dengan metode Bayar di Tempat (PAY_AT_STORE).",
+        message: "Fungsi ini hanya untuk pesanan 'Bayar di Tempat'.",
       });
     }
 
-    if (
-      orderData.paymentDetails.status === "paid" &&
-      (!req.files || req.files.length === 0)
-    ) {
-      // Jika sudah lunas dan tidak ada file baru diupload, anggap berhasil
-      return handleSuccess(
-        res,
-        200,
-        "Pembayaran untuk pesanan ini sudah dikonfirmasi sebelumnya dan tidak ada bukti baru diunggah.",
-        orderData
-      );
-    }
-
-    const proofImageURLs = orderData.paymentDetails.proofImageURLs || []; // Ambil URL lama jika ada
+    const proofImageURLs = orderData.paymentDetails.proofImageURLs || [];
     let newProofsUploaded = false;
-
     if (req.files && req.files.length > 0) {
       newProofsUploaded = true;
-      const bucket = storage.bucket(); // Dapatkan default bucket
+      const bucket = storage.bucket();
       for (const file of req.files) {
         const timestamp = Date.now();
         const originalNameWithoutExt = path.parse(file.originalname).name;
         const extension = path.parse(file.originalname).ext;
-        // Buat nama file yang lebih unik dan bersih
         const fileName = `orders/${orderId}/paymentProofs/${timestamp}-${originalNameWithoutExt.replace(
           /\s+/g,
           "_"
         )}${extension}`;
         const fileUpload = bucket.file(fileName);
-
         await fileUpload.save(file.buffer, {
           metadata: { contentType: file.mimetype },
-          public: true, // Otomatis buat publik saat upload
+          public: true,
         });
-        // URL publik format: `https://storage.googleapis.com/${bucketName}/${filePath}`
         proofImageURLs.push(
           `https://storage.googleapis.com/${bucket.name}/${fileName}`
         );
@@ -933,11 +957,30 @@ exports.confirmPayAtStorePaymentBySeller = async (req, res) => {
         paymentConfirmationNotes;
     }
     if (newProofsUploaded || proofImageURLs.length > 0) {
-      // Simpan jika ada URL baru atau lama
       updatePayload["paymentDetails.proofImageURLs"] = proofImageURLs;
     }
 
     await orderRef.update(updatePayload);
+
+    try {
+      const customerId = orderData.userId;
+      const notificationPayload = {
+        userId: customerId,
+        title: "Pembayaran Dikonfirmasi",
+        body: `Pembayaran untuk pesanan #${orderId.substring(
+          0,
+          20
+        )} telah dikonfirmasi oleh penjual.`,
+        data: { orderId: orderId, type: "PAYMENT_CONFIRMED" },
+      };
+      await sendNotification(notificationPayload);
+    } catch (notifError) {
+      console.error(
+        "Gagal mengirim notifikasi konfirmasi pembayaran ke customer:",
+        notifError
+      );
+    }
+
     const updatedOrderDoc = await orderRef.get();
     return handleSuccess(
       res,

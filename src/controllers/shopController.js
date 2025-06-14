@@ -1,10 +1,8 @@
-// src/controllers/shopController.js
 const { firestore, auth, storage } = require("../config/firebaseConfig");
 const { FieldValue } = require("firebase-admin/firestore");
 const { handleSuccess, handleError } = require("../utils/responseHandler");
 const { v4: uuidv4 } = require("uuid");
 
-// ... (Helper functions deleteShopBannerFromStorage, deleteUserProfilePhotoFromStorage tetap sama) ...
 async function deleteShopBannerFromStorage(bannerURL, bucket) {
   if (!bannerURL || !bucket) {
     console.log(
@@ -99,7 +97,6 @@ async function deleteUserProfilePhotoFromStorage(photoURL, bucket) {
   }
 }
 
-// --- Shop Controller Functions ---
 
 exports.createShop = async (req, res) => {
   const uid = req.user?.uid;
@@ -210,7 +207,7 @@ exports.createShop = async (req, res) => {
       res,
       201,
       "Toko berhasil dibuat berdasarkan profil Anda.",
-      newShopData // Ini masih mengembalikan data mentah, mungkin perlu diformat jika ingin konsisten dengan listShops
+      newShopData
     );
   } catch (error) {
     console.error("Error creating shop:", error);
@@ -411,9 +408,8 @@ exports.updateShop = async (req, res) => {
       }
     }
 
-    const updatedShopDoc = await shopDocRef.get(); // Ambil data toko yang sudah diupdate
+    const updatedShopDoc = await shopDocRef.get(); 
     const formattedShop = {
-      // Format output agar konsisten
       shopId: updatedShopDoc.data()._id,
       shopName: updatedShopDoc.data().shopName,
       description: updatedShopDoc.data().description,
@@ -422,7 +418,6 @@ exports.updateShop = async (req, res) => {
       createdAt: updatedShopDoc.data().createdAt,
       updatedAt: updatedShopDoc.data().updatedAt,
       shopName_lowercase: updatedShopDoc.data().shopName_lowercase,
-      // ownerName tidak diambil di sini, tapi bisa jika diperlukan dan konsisten
     };
 
     let message = "Toko berhasil diperbarui.";
@@ -441,7 +436,7 @@ exports.updateShop = async (req, res) => {
         " Banner toko dan foto profil pengguna (jika sebelumnya sinkron) telah dihapus.";
     }
 
-    return handleSuccess(res, 200, message, formattedShop); // Kirim data yang sudah diformat
+    return handleSuccess(res, 200, message, formattedShop);
   } catch (error) {
     console.error("Error updating shop and user profile:", error);
     return handleError(
@@ -486,7 +481,6 @@ exports.getMyShop = async (req, res) => {
     }
 
     const shopData = shopSnapshot.docs[0].data();
-    // Format output agar konsisten
     const formattedShop = {
       shopId: shopData._id,
       shopName: shopData.shopName,
@@ -497,7 +491,6 @@ exports.getMyShop = async (req, res) => {
       updatedAt: shopData.updatedAt,
       shopName_lowercase: shopData.shopName_lowercase,
       ownerUID: shopData.ownerUID,
-      // ownerName bisa diambil jika perlu
     };
     return handleSuccess(
       res,
@@ -512,7 +505,6 @@ exports.getMyShop = async (req, res) => {
 };
 
 exports.deleteShop = async (req, res) => {
-  // ... (fungsi ini tetap sama)
   const uid = req.user?.uid;
 
   if (!uid) {
@@ -689,21 +681,18 @@ exports.deleteShop = async (req, res) => {
   }
 };
 
-// Helper function untuk memformat output toko agar konsisten
 function formatShopObject(shopData, ownerName) {
   if (!shopData) return null;
   return {
-    shopId: shopData._id, // Mengganti _id menjadi shopId
+    shopId: shopData._id, 
     shopName: shopData.shopName,
     description: shopData.description,
     shopAddress: shopData.shopAddress,
     bannerImageURL: shopData.bannerImageURL,
     createdAt: shopData.createdAt,
-    updatedAt: shopData.updatedAt, // Ditambahkan untuk konsistensi jika diperlukan
+    updatedAt: shopData.updatedAt,
     ownerName: ownerName || "Nama Pemilik Tidak Tersedia",
-    ownerUID: shopData.ownerUID, // Ditambahkan untuk informasi tambahan jika diperlukan
-    // shopName_lowercase bisa dihilangkan dari respons akhir jika tidak untuk klien
-    // shopName_lowercase: shopData.shopName_lowercase,
+    ownerUID: shopData.ownerUID, 
   };
 }
 
@@ -739,7 +728,6 @@ exports.listShops = async (req, res) => {
       } else if (!sortBy) {
         shopsQuery = shopsQuery.orderBy("createdAt", "desc");
       }
-      // Sorting by shopName or createdAt (if default) akan ditangani setelah fetch jika searchByShopName aktif
     }
 
     const pageNum = parseInt(page, 10);
@@ -752,7 +740,7 @@ exports.listShops = async (req, res) => {
     if (isSearchingById) {
       const shopSnapshot = await shopsQuery.get();
       if (!shopSnapshot.empty) {
-        const shopData = shopSnapshot.docs[0].data(); // Asumsi searchById mengembalikan maks 1
+        const shopData = shopSnapshot.docs[0].data();
         let ownerName = "Nama Pemilik Tidak Tersedia";
         if (shopData.ownerUID) {
           try {
@@ -783,13 +771,12 @@ exports.listShops = async (req, res) => {
         allShopsData = allShopsData.filter((shop) => {
           if (!shop.shopName) return false;
           const shopNameForFilter = isShopNameSearchCaseInsensitive
-            ? shop.shopName_lowercase || shop.shopName.toLowerCase() // Fallback ke shopName.toLowerCase() jika shopName_lowercase belum ada
+            ? shop.shopName_lowercase || shop.shopName.toLowerCase()
             : shop.shopName;
           return shopNameForFilter.includes(searchTerm);
         });
       }
 
-      // Server-side sorting
       if (sortBy) {
         allShopsData.sort((a, b) => {
           let valA, valB;
@@ -805,7 +792,7 @@ exports.listShops = async (req, res) => {
             valB = b[sortBy];
           }
 
-          if (valA === undefined || valA === null) valA = ""; // default untuk undefined/null
+          if (valA === undefined || valA === null) valA = ""; 
           if (valB === undefined || valB === null) valB = "";
 
           if (typeof valA === "string" && typeof valB === "string") {
@@ -813,15 +800,12 @@ exports.listShops = async (req, res) => {
               ? valA.localeCompare(valB)
               : valB.localeCompare(valA);
           } else {
-            // Basic numeric/date comparison
             if (valA < valB) return order === "asc" ? -1 : 1;
             if (valA > valB) return order === "asc" ? 1 : -1;
             return 0;
           }
         });
       }
-      // Jika tidak ada sortBy dan ada searchByShopName, default sort createdAt tidak lagi relevan di sini
-      // karena data sudah diambil semua. Jika ingin default sort tetap ada, bisa ditambahkan.
 
       totalShops = allShopsData.length;
       const paginatedShopsData = allShopsData.slice(offset, offset + limitNum);
@@ -893,7 +877,6 @@ exports.listShops = async (req, res) => {
 };
 
 exports.getShopDetails = async (req, res) => {
-  // ... (fungsi ini tetap sama, namun outputnya bisa juga diformat dengan formatShopObject jika diinginkan)
   const { shopId } = req.params;
 
   if (!shopId) {
@@ -915,16 +898,15 @@ exports.getShopDetails = async (req, res) => {
     }
     const shopData = shopDoc.data();
 
-    let ownerProfile = null; // Untuk getShopDetails, kita tampilkan lebih banyak info owner
+    let ownerProfile = null; 
     let ownerName = "Nama Pemilik Tidak Tersedia";
     if (shopData.ownerUID) {
       const userDocRef = firestore.collection("users").doc(shopData.ownerUID);
       const userDoc = await userDocRef.get();
       if (userDoc.exists) {
         const userData = userDoc.data();
-        ownerName = userData.displayName || ownerName; // Untuk konsistensi dengan listShops
+        ownerName = userData.displayName || ownerName; 
         ownerProfile = {
-          // Detail profil owner
           uid: userDoc.id,
           displayName: userData.displayName,
           photoURL: userData.photoURL,
@@ -936,7 +918,6 @@ exports.getShopDetails = async (req, res) => {
       }
     }
 
-    // Ambil produk
     const productsQuery = firestore
       .collection("products")
       .where("shopId", "==", shopId)
