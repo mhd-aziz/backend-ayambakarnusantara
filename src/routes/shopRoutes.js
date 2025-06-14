@@ -10,15 +10,17 @@ const upload = require("../middlewares/multerConfig");
 router.post(
   "/",
   authenticateToken,
-  upload.single("bannerImage"), 
+  upload.single("bannerImage"),
   shopController.createShop
 );
 
+router.get("/my-shop", authenticateToken, isSeller, shopController.getMyShop);
+
 router.get(
-  "/my-shop",
+  "/my-shop/statistics",
   authenticateToken,
-  isSeller, 
-  shopController.getMyShop
+  isSeller,
+  shopController.getShopStatistics
 );
 
 router.put(
@@ -29,14 +31,12 @@ router.put(
   shopController.updateShop
 );
 
-
 router.delete(
   "/my-shop",
   authenticateToken,
   isSeller,
   shopController.deleteShop
 );
-
 
 router.get("/", shopController.listShops);
 
