@@ -1,4 +1,3 @@
-// src/controllers/chatbotController.js
 const axios = require("axios");
 const { handleSuccess, handleError } = require("../utils/responseHandler");
 const { firestore } = require("../config/firebaseConfig");

@@ -15,35 +15,19 @@ const ratingRoutes = require("./routes/ratingRoutes");
 const chatbotRoutes = require("./routes/chatbotRoutes");
 const chatRoutes = require("./routes/chatRoutes");
 const notificationsRoutes = require("./routes/notificationRoutes");
+const feedbackRoutes = require("./routes/feedbackRoutes");
 require("./config/firebaseConfig");
 
 const { handleError } = require("./utils/responseHandler");
 const app = express();
 const port = process.env.PORT || 3000;
 
-// --- Updated CORS Configuration ---
-const frontendAppUrl = process.env.FRONTEND_APP_URL || "http://localhost:3000";
-// Tambahkan variabel environment untuk origin Rasa Anda, contoh:
-// RASA_ORIGIN_URL=http://localhost:5005 (jika Rasa server Anda berjalan di port 5005)
-// atau RASA_ORIGIN_URL=http://localhost:5055 (jika action server yang perlu akses langsung dan mengirim header Origin)
-const rasaOriginUrl = process.env.RASA_ORIGIN_URL;
+const allowedOriginsString =
+  process.env.CORS_ALLOWED_ORIGINS || "http://localhost:3000";
 
-const allowedOrigins = [frontendAppUrl];
-
-if (rasaOriginUrl) {
-  allowedOrigins.push(rasaOriginUrl);
-  console.log(
-    `RASA_ORIGIN_URL (${rasaOriginUrl}) ditambahkan ke daftar origin CORS yang diizinkan.`
-  );
-} else {
-  console.warn(
-    "RASA_ORIGIN_URL tidak diatur di file .env. " +
-      "Jika Rasa (misalnya, UI webchat yang di-host di origin berbeda, atau action server yang mengirim header Origin) " +
-      "perlu membuat permintaan cross-origin ke backend ini, pastikan untuk mengatur RASA_ORIGIN_URL."
-  );
-  // Pertimbangkan untuk menambahkan default lain di sini jika diperlukan untuk pengembangan lokal,
-  // misalnya: allowedOrigins.push("http://localhost:5055");
-}
+const allowedOrigins = allowedOriginsString
+  .split(",")
+  .map((origin) => origin.trim());
 
 console.log("Allowed CORS origins:", allowedOrigins);
 
@@ -85,6 +69,7 @@ app.use("/rating", ratingRoutes);
 app.use("/chatbot", chatbotRoutes);
 app.use("/chat", chatRoutes);
 app.use("/notification", notificationsRoutes);
+app.use("/feedback", feedbackRoutes);
 
 app.use((err, req, res, next) => {
   if (res.headersSent) {

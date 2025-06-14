@@ -97,7 +97,6 @@ async function deleteUserProfilePhotoFromStorage(photoURL, bucket) {
   }
 }
 
-
 exports.createShop = async (req, res) => {
   const uid = req.user?.uid;
   const { description } = req.body;
@@ -408,7 +407,7 @@ exports.updateShop = async (req, res) => {
       }
     }
 
-    const updatedShopDoc = await shopDocRef.get(); 
+    const updatedShopDoc = await shopDocRef.get();
     const formattedShop = {
       shopId: updatedShopDoc.data()._id,
       shopName: updatedShopDoc.data().shopName,
@@ -684,7 +683,7 @@ exports.deleteShop = async (req, res) => {
 function formatShopObject(shopData, ownerName) {
   if (!shopData) return null;
   return {
-    shopId: shopData._id, 
+    shopId: shopData._id,
     shopName: shopData.shopName,
     description: shopData.description,
     shopAddress: shopData.shopAddress,
@@ -692,7 +691,7 @@ function formatShopObject(shopData, ownerName) {
     createdAt: shopData.createdAt,
     updatedAt: shopData.updatedAt,
     ownerName: ownerName || "Nama Pemilik Tidak Tersedia",
-    ownerUID: shopData.ownerUID, 
+    ownerUID: shopData.ownerUID,
   };
 }
 
@@ -792,7 +791,7 @@ exports.listShops = async (req, res) => {
             valB = b[sortBy];
           }
 
-          if (valA === undefined || valA === null) valA = ""; 
+          if (valA === undefined || valA === null) valA = "";
           if (valB === undefined || valB === null) valB = "";
 
           if (typeof valA === "string" && typeof valB === "string") {
@@ -898,14 +897,14 @@ exports.getShopDetails = async (req, res) => {
     }
     const shopData = shopDoc.data();
 
-    let ownerProfile = null; 
+    let ownerProfile = null;
     let ownerName = "Nama Pemilik Tidak Tersedia";
     if (shopData.ownerUID) {
       const userDocRef = firestore.collection("users").doc(shopData.ownerUID);
       const userDoc = await userDocRef.get();
       if (userDoc.exists) {
         const userData = userDoc.data();
-        ownerName = userData.displayName || ownerName; 
+        ownerName = userData.displayName || ownerName;
         ownerProfile = {
           uid: userDoc.id,
           displayName: userData.displayName,
@@ -943,7 +942,7 @@ exports.getShopDetails = async (req, res) => {
 
     const responseData = {
       shop: formattedShopData,
-      owner: ownerProfile, 
+      owner: ownerProfile,
       products: products,
     };
 
@@ -956,5 +955,113 @@ exports.getShopDetails = async (req, res) => {
   } catch (error) {
     console.error(`Error getting shop details for shopId ${shopId}:`, error);
     return handleError(res, error, "Gagal mengambil detail toko.");
+  }
+};
+
+exports.getShopStatistics = async (req, res) => {
+  const uid = req.user?.uid;
+  const { period = "all_time" } = req.query;
+
+  if (!uid) {
+    return handleError(res, {
+      statusCode: 401,
+      message: "Otentikasi diperlukan.",
+    });
+  }
+
+  try {
+    const userDoc = await firestore.collection("users").doc(uid).get();
+    if (!userDoc.exists || userDoc.data().role !== "seller") {
+      return handleError(res, {
+        statusCode: 403,
+        message: "Hanya seller yang dapat mengakses statistik toko.",
+      });
+    }
+
+    const shopId = userDoc.data().shopId;
+    if (!shopId) {
+      return handleError(res, {
+        statusCode: 404,
+        message: "Toko tidak ditemukan untuk seller ini.",
+      });
+    }
+
+    const productsSnapshot = await firestore
+      .collection("products")
+      .where("shopId", "==", shopId)
+      .get();
+    const totalProducts = productsSnapshot.size;
+
+    let ordersQuery = firestore.collection("orders");
+
+    const now = new Date();
+    let startDate;
+
+    if (period === "daily") {
+      startDate = new Date(now.setHours(0, 0, 0, 0));
+    } else if (period === "weekly") {
+      startDate = new Date(now.setDate(now.getDate() - 7));
+    } else if (period === "monthly") {
+      startDate = new Date(now.setDate(now.getDate() - 30));
+    }
+
+    if (startDate) {
+      ordersQuery = ordersQuery.where(
+        "createdAt",
+        ">=",
+        startDate.toISOString()
+      );
+    }
+
+    const ordersSnapshot = await ordersQuery.get();
+    let totalRevenue = 0;
+    let newOrdersCount = 0;
+    let completedOrdersCount = 0;
+
+    ordersSnapshot.forEach((doc) => {
+      const orderData = doc.data();
+      if (
+        orderData.items &&
+        orderData.items.some((item) => item.shopId === shopId)
+      ) {
+        newOrdersCount++; 
+
+        if (orderData.orderStatus === "COMPLETED") {
+          completedOrdersCount++;
+          totalRevenue += orderData.totalPrice;
+        }
+      }
+    });
+
+    const statistics = {
+      period,
+      totalProducts,
+      newOrders: {
+        count: newOrdersCount,
+        description: `Total pesanan yang masuk dalam periode ini.`,
+      },
+      completedOrders: {
+        count: completedOrdersCount,
+        description: `Pesanan yang telah selesai dalam periode ini.`,
+      },
+      revenue: {
+        amount: totalRevenue,
+        formatted: new Intl.NumberFormat("id-ID", {
+          style: "currency",
+          currency: "IDR",
+        }).format(totalRevenue),
+        description: "Total pendapatan dari pesanan yang telah selesai.",
+      },
+    };
+
+    return handleSuccess(
+      res,
+      200,
+      "Statistik toko berhasil diambil.",
+      statistics
+    );
+  } catch (error) {
+    console.error("Error getting shop statistics:", error);
+    return handleError(res, error, "Gagal mengambil statistik toko.");
   }
 };
