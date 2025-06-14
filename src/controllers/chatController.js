@@ -127,6 +127,10 @@ exports.startOrGetConversation = async (req, res) => {
           },
         },
         lastMessage: null,
+        unreadCounts: {
+          [initiatorUID]: 0,
+          [recipientUID]: 0,
+        },
         createdAt: FieldValue.serverTimestamp(),
         updatedAt: FieldValue.serverTimestamp(),
       };
@@ -311,6 +315,7 @@ exports.sendMessage = async (req, res) => {
         timestamp: currentTimestamp,
       },
       updatedAt: currentTimestamp,
+      [`unreadCounts.${recipientUID}`]: FieldValue.increment(1),
     });
 
     await batch.commit();

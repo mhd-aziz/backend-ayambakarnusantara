@@ -1,22 +1,12 @@
-// src/controllers/notificationController.js
-
 const { firestore, admin } = require("../config/firebaseConfig");
 const { handleSuccess, handleError } = require("../utils/responseHandler");
 
-/**
- * Fungsi internal untuk membuat dan mengirim notifikasi.
- * Tidak diekspos langsung sebagai API route.
- * @param {object} notificationPayload - Data notifikasi.
- * @param {string} notificationPayload.userId - ID pengguna penerima.
- * @param {string} notificationPayload.title - Judul notifikasi.
- * @param {string} notificationPayload.body - Isi pesan notifikasi.
- * @param {object} [notificationPayload.data] - Data tambahan (misal: { orderId: '...' }).
- */
 exports.sendNotification = async (notificationPayload) => {
   const { userId, title, body, data } = notificationPayload;
 
   try {
-    const userDoc = await firestore.collection("users").doc(userId).get();
+    const userDocRef = firestore.collection("users").doc(userId);
+    const userDoc = await userDocRef.get();
     if (
       !userDoc.exists ||
       !userDoc.data().fcmTokens ||
@@ -66,6 +56,7 @@ exports.sendNotification = async (notificationPayload) => {
     );
     const response = await admin.messaging().sendEachForTokens(message);
 
+    const tokensToRemove = [];
     response.responses.forEach((result, index) => {
       if (!result.success) {
         const error = result.error;
@@ -73,20 +64,26 @@ exports.sendNotification = async (notificationPayload) => {
           error.code === "messaging/registration-token-not-registered" ||
           error.code === "messaging/invalid-registration-token"
         ) {
-          console.log(`Menghapus token FCM tidak valid: ${fcmTokens[index]}`);
+          const invalidToken = fcmTokens[index];
+          console.log(`Token FCM tidak valid ditemukan: ${invalidToken}`);
+          tokensToRemove.push(invalidToken);
         }
       }
     });
+
+    if (tokensToRemove.length > 0) {
+      console.log(
+        `Menghapus ${tokensToRemove.length} token FCM yang tidak valid untuk pengguna ${userId}.`
+      );
+      await userDocRef.update({
+        fcmTokens: admin.firestore.FieldValue.arrayRemove(...tokensToRemove),
+      });
+    }
   } catch (error) {
     console.error(`Gagal mengirim notifikasi untuk pengguna ${userId}:`, error);
   }
 };
 
-/**
- * @desc    Mengambil daftar notifikasi untuk pengguna yang sedang login.
- * @route   GET /notifications
- * @access  Private
- */
 exports.getUserNotifications = async (req, res) => {
   const userId = req.user?.uid;
 
@@ -111,11 +108,6 @@ exports.getUserNotifications = async (req, res) => {
   }
 };
 
-/**
- * @desc    Menandai satu notifikasi sebagai sudah dibaca.
- * @route   PATCH /notifications/:notificationId/read
- * @access  Private
- */
 exports.markNotificationAsRead = async (req, res) => {
   const userId = req.user?.uid;
   const { notificationId } = req.params;
