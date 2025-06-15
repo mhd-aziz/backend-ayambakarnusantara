@@ -1,5 +1,9 @@
-// src/controllers/authController.js
-const { auth, firestore, clientAuth } = require("../config/firebaseConfig");
+const {
+  auth,
+  firestore,
+  clientAuth,
+  storage,
+} = require("../config/firebaseConfig");
 const { handleSuccess, handleError } = require("../utils/responseHandler");
 const axios = require("axios");
 require("dotenv").config();
@@ -286,6 +290,26 @@ exports.forgotPassword = async (req, res) => {
   }
 };
 
+async function deleteQueryBatch(db, query, onDelete) {
+  const snapshot = await query.get();
+
+  if (snapshot.size === 0) {
+    return 0;
+  }
+
+  const batch = db.batch();
+  snapshot.docs.forEach((doc) => {
+    batch.delete(doc.ref);
+    if (onDelete) {
+      onDelete(doc);
+    }
+  });
+
+  await batch.commit();
+
+  return snapshot.size;
+}
+
 exports.deleteUser = async (req, res) => {
   const uid = req.user?.uid;
   if (!uid) {
@@ -295,38 +319,142 @@ exports.deleteUser = async (req, res) => {
     });
   }
 
+  console.log(`[PENGHAPUSAN AKUN] Memulai proses untuk UID: ${uid}`);
+
+  const userDocRef = firestore.collection("users").doc(uid);
+  const bucket = storage.bucket();
+
   try {
-    await auth.deleteUser(uid);
-    const userDocRef = firestore.collection("users").doc(uid);
+    const userDoc = await userDocRef.get();
+    if (!userDoc.exists) {
+      console.log(
+        `[PENGHAPUSAN AKUN] Dokumen pengguna tidak ditemukan, mencoba menghapus sisa data auth untuk UID: ${uid}`
+      );
+      await auth.deleteUser(uid);
+      return handleSuccess(res, 200, "Akun pengguna (sisa) berhasil dihapus.");
+    }
+    const userData = userDoc.data();
+    const isSeller = userData.role === "seller";
+    const shopId = userData.shopId;
+
+    const deletionPromises = [];
+
+    if (isSeller && shopId) {
+      console.log(
+        `[PENGHAPUSAN AKUN] Pengguna adalah SELLER. Menghapus toko ID: ${shopId}`
+      );
+      const productsQuery = firestore
+        .collection("products")
+        .where("shopId", "==", shopId);
+      const deleteProductsPromise = deleteQueryBatch(
+        firestore,
+        productsQuery,
+        (productDoc) => {
+          const productData = productDoc.data();
+          if (productData.productImageURL) {
+            console.log(
+              `[PENGHAPUSAN AKUN] Menghapus gambar produk: ${productData.productImageURL}`
+            );
+            bucket
+              .file(productData.productImageURL.split(bucket.name + "/")[1])
+              .delete()
+              .catch((err) => console.warn(err.message));
+          }
+        }
+      );
+      deletionPromises.push(deleteProductsPromise);
+
+      if (userData.bannerImageURL) {
+        console.log(
+          `[PENGHAPUSAN AKUN] Menghapus banner toko: ${userData.bannerImageURL}`
+        );
+        deletionPromises.push(
+          bucket
+            .file(userData.bannerImageURL.split(bucket.name + "/")[1])
+            .delete()
+            .catch((err) => console.warn(err.message))
+        );
+      }
+      deletionPromises.push(firestore.collection("shops").doc(shopId).delete());
+    }
+
+    const collectionsToDelete = ["carts", "userChatHistories"];
+    collectionsToDelete.forEach((collection) => {
+      console.log(
+        `[PENGHAPUSAN AKUN] Menghapus dokumen dari '${collection}' untuk UID: ${uid}`
+      );
+      deletionPromises.push(firestore.collection(collection).doc(uid).delete());
+    });
+
+    const queriesToDelete = [
+      firestore.collection("orders").where("userId", "==", uid),
+      firestore.collection("ratings").where("userId", "==", uid),
+      firestore
+        .collection("conversations")
+        .where("participantUIDs", "array-contains", uid),
+    ];
+    queriesToDelete.forEach((query) => {
+      deletionPromises.push(deleteQueryBatch(firestore, query));
+    });
+
+    if (userData.photoURL) {
+      console.log(
+        `[PENGHAPUSAN AKUN] Menghapus foto profil: ${userData.photoURL}`
+      );
+      deletionPromises.push(
+        bucket
+          .file(userData.photoURL.split(bucket.name + "/")[1])
+          .delete()
+          .catch((err) => console.warn(err.message))
+      );
+    }
+
+    await Promise.all(deletionPromises);
+    console.log(
+      `[PENGHAPUSAN AKUN] Semua data terkait di Firestore & Storage untuk UID: ${uid} telah dihapus.`
+    );
+
     await userDocRef.delete();
+    console.log(
+      `[PENGHAPUSAN AKUN] Dokumen pengguna UID: ${uid} telah dihapus.`
+    );
+
+    await auth.deleteUser(uid);
+    console.log(
+      `[PENGHAPUSAN AKUN] Akun Firebase Auth UID: ${uid} telah dihapus.`
+    );
 
     res.cookie("authToken", "", {
       ...cookieOptions,
       expires: new Date(0),
     });
 
-    console.log(`Akun dengan UID: ${uid} berhasil dihapus.`);
-    return handleSuccess(res, 200, "Akun Anda berhasil dihapus.");
+    console.log(`[PENGHAPUSAN AKUN] Proses untuk UID: ${uid} BERHASIL.`);
+    return handleSuccess(
+      res,
+      200,
+      "Akun Anda dan semua data terkait telah berhasil dihapus secara permanen."
+    );
   } catch (error) {
-    console.error(`Error deleting account UID: ${uid}:`, error);
+    console.error(
+      `[PENGHAPUSAN AKUN] GAGAL saat memproses UID: ${uid}:`,
+      error
+    );
     if (error.code === "auth/user-not-found") {
-      const userDocRef = firestore.collection("users").doc(uid);
+      console.warn(
+        `[PENGHAPUSAN AKUN] Akun Auth untuk UID: ${uid} tidak ditemukan, mungkin sudah dihapus. Melanjutkan pembersihan sisa data...`
+      );
       try {
         await userDocRef.delete();
-        console.log(
-          `Dokumen Firestore untuk UID: ${uid} dihapus setelah error auth/user-not-found.`
-        );
-      } catch (firestoreDeleteError) {
+        return handleSuccess(res, 200, "Sisa data akun berhasil dibersihkan.");
+      } catch (fsError) {
         console.error(
-          `Gagal menghapus dokumen Firestore untuk UID: ${uid} setelah error:`,
-          firestoreDeleteError
+          `[PENGHAPUSAN AKUN] Gagal menghapus sisa dokumen firestore untuk UID: ${uid}`,
+          fsError
         );
+        return handleError(res, fsError, "Gagal membersihkan sisa data akun.");
       }
-      return handleError(res, {
-        statusCode: 404,
-        message: "Akun tidak ditemukan.",
-      });
     }
-    return handleError(res, error, "Gagal menghapus akun.");
+    return handleError(res, error, "Gagal menghapus akun secara lengkap.");
   }
 };
