@@ -441,7 +441,37 @@ exports.getRatingsForProduct = async (req, res) => {
       .orderBy("createdAt", "desc")
       .get();
 
-    const ratings = ratingsQuery.docs.map((doc) => doc.data());
+    let ratings = ratingsQuery.docs.map((doc) => doc.data());
+
+    if (ratings.length > 0) {
+      const userIds = [...new Set(ratings.map((rating) => rating.userId))];
+
+      const usersSnapshot = await firestore
+        .collection("users")
+        .where("uid", "in", userIds)
+        .get();
+
+      const userCache = {};
+      usersSnapshot.forEach((doc) => {
+        const userData = doc.data();
+        userCache[doc.id] = {
+          displayName: userData.displayName || "Pengguna Anonim",
+          photoURL: userData.photoURL || null,
+        };
+      });
+
+      ratings = ratings.map((rating) => {
+        const freshUserData = userCache[rating.userId];
+        if (freshUserData) {
+          return {
+            ...rating,
+            userDisplayName: freshUserData.displayName,
+            userPhotoURL: freshUserData.photoURL,
+          };
+        }
+        return rating;
+      });
+    }
 
     return handleSuccess(res, 200, "Rating produk berhasil diambil.", {
       productDetails: productDoc.data(),
@@ -514,9 +544,43 @@ exports.getRatings = async (req, res) => {
       });
     }
 
-    const ratings = snapshot.docs.map((doc) => doc.data());
+    let ratings = snapshot.docs.map((doc) => doc.data());
     const lastDocInBatch = snapshot.docs[snapshot.docs.length - 1];
     const nextCursor = lastDocInBatch ? lastDocInBatch.id : null;
+
+    if (ratings.length > 0) {
+      const userIds = [
+        ...new Set(ratings.map((rating) => rating.userId).filter(Boolean)),
+      ];
+
+      if (userIds.length > 0) {
+        const usersSnapshot = await firestore
+          .collection("users")
+          .where("uid", "in", userIds)
+          .get();
+
+        const userCache = {};
+        usersSnapshot.forEach((doc) => {
+          const userData = doc.data();
+          userCache[doc.id] = {
+            displayName: userData.displayName || "Pengguna Anonim",
+            photoURL: userData.photoURL || null,
+          };
+        });
+
+        ratings = ratings.map((rating) => {
+          const freshUserData = userCache[rating.userId];
+          if (freshUserData) {
+            return {
+              ...rating,
+              userDisplayName: freshUserData.displayName,
+              userPhotoURL: freshUserData.photoURL,
+            };
+          }
+          return rating;
+        });
+      }
+    }
 
     return handleSuccess(res, 200, "Rating berhasil diambil.", {
       ratings,

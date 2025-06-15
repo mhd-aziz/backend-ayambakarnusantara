@@ -1,12 +1,3 @@
-// src/utils/responseHandler.js
-
-/**
- * Mengirim respons sukses standar.
- * @param {object} res - Objek respons Express.
- * @param {number} statusCode - Kode status HTTP.
- * @param {string} message - Pesan sukses.
- * @param {object} [data=null] - Data yang akan dikirim (opsional).
- */
 exports.handleSuccess = (res, statusCode, message, data = null) => {
   const responsePayload = { success: true, message };
   if (data !== null) {
@@ -15,12 +6,6 @@ exports.handleSuccess = (res, statusCode, message, data = null) => {
   return res.status(statusCode).json(responsePayload);
 };
 
-/**
- * Menangani dan mengirim respons error standar.
- * @param {object} res - Objek respons Express.
- * @param {Error | object} error - Objek error atau objek custom error.
- * @param {string} [defaultMessage='Terjadi kesalahan pada server.'] - Pesan default jika tidak ada pesan spesifik.
- */
 exports.handleError = (
   res,
   error,
@@ -30,10 +15,8 @@ exports.handleError = (
     `Error Handler: Message: "${error.message}"`,
     error.code ? `Firebase Code: ${error.code}` : "",
     error.statusCode ? `Custom Status: ${error.statusCode}` : "",
-    error.errorCode ? `Custom ErrorCode: ${error.errorCode}` : "" // misal: TOKEN_EXPIRED
+    error.errorCode ? `Custom ErrorCode: ${error.errorCode}` : ""
   );
-
-  // Log stack trace untuk error yang tidak terduga di environment development
   if (
     process.env.NODE_ENV !== "production" &&
     error instanceof Error &&

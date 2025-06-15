@@ -1,4 +1,3 @@
-// src/config/firebaseConfig.js
 const admin = require("firebase-admin");
 const { initializeApp: initializeClientApp } = require("firebase/app");
 const { getAuth: getClientAuth } = require("firebase/auth");

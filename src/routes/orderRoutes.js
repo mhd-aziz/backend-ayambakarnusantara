@@ -6,13 +6,11 @@ const upload = require("../middlewares/multerConfig");
 
 router.use(authenticateToken);
 
-// --- Rute untuk Pelanggan (Customer) ---
 router.post("/", orderController.createOrder);
 router.get("/", orderController.getUserOrders);
 router.get("/customer/:orderId", orderController.getOrderDetailsForCustomer);
 router.patch("/:orderId/cancel", orderController.cancelOrder);
 
-// --- Rute untuk Penjual (Seller) ---
 router.get("/seller/all", orderController.getSellerOrders);
 router.get("/seller/:orderId", orderController.getOrderDetailsForSeller);
 router.patch(
@@ -25,7 +23,6 @@ router.patch(
   orderController.confirmPayAtStorePaymentBySeller
 );
 
-// --- Rute untuk mendapatkan bukti transaksi (akses oleh customer & seller terkait)
 router.get("/:orderId/payment-proofs", orderController.getOrderPaymentProofs);
 
 router.get("/all", orderController.getOrders);

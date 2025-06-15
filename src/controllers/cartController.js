@@ -1,15 +1,7 @@
-// src/controllers/cartController.js
 const { firestore } = require("../config/firebaseConfig");
 const { handleSuccess, handleError } = require("../utils/responseHandler");
 const { FieldValue } = require("firebase-admin/firestore");
 
-// --- Cart Controller Functions ---
-
-/**
- * @desc    Add an item to the user's cart or update quantity if it already exists.
- * @route   POST /api/cart/items
- * @access  Private (Authenticated Users)
- */
 exports.addItemToCart = async (req, res) => {
   const userId = req.user?.uid;
   const { productId, quantity } = req.body;
@@ -62,7 +54,6 @@ exports.addItemToCart = async (req, res) => {
     let itemIndex = -1;
 
     if (!cartDoc.exists) {
-      // Buat keranjang baru jika belum ada
       cartData = {
         userId: userId,
         items: [],
@@ -78,7 +69,6 @@ exports.addItemToCart = async (req, res) => {
     }
 
     if (itemIndex > -1) {
-      // Produk sudah ada di keranjang, update kuantitas
       const existingItem = cartData.items[itemIndex];
       const newQuantityForItem = existingItem.quantity + numQuantity;
 
@@ -91,26 +81,24 @@ exports.addItemToCart = async (req, res) => {
       existingItem.quantity = newQuantityForItem;
       existingItem.subtotal = existingItem.price * existingItem.quantity;
     } else {
-      // Tambah produk baru ke keranjang
       cartData.items.push({
         productId: productId,
-        shopId: productData.shopId, // Simpan shopId untuk referensi
+        shopId: productData.shopId,
         name: productData.name,
-        price: productData.price, // Simpan harga saat ditambahkan
+        price: productData.price,
         quantity: numQuantity,
         productImageURL: productData.productImageURL || null,
         subtotal: productData.price * numQuantity,
       });
     }
 
-    // Hitung ulang total harga keranjang
     cartData.totalPrice = cartData.items.reduce(
       (total, item) => total + item.subtotal,
       0
     );
     cartData.updatedAt = new Date().toISOString();
 
-    await cartRef.set(cartData, { merge: true }); // Gunakan merge true untuk update atau create
+    await cartRef.set(cartData, { merge: true });
 
     return handleSuccess(
       res,
@@ -124,11 +112,6 @@ exports.addItemToCart = async (req, res) => {
   }
 };
 
-/**
- * @desc    Get the user's current cart.
- * @route   GET /api/cart
- * @access  Private (Authenticated Users)
- */
 exports.getCart = async (req, res) => {
   const userId = req.user?.uid;
 
@@ -155,11 +138,6 @@ exports.getCart = async (req, res) => {
       });
     }
 
-    // TODO: Pertimbangkan untuk validasi ulang harga produk dan ketersediaan stok di sini
-    // sebelum mengirimkan data keranjang, terutama jika harga sering berubah atau
-    // untuk memastikan konsistensi sebelum checkout.
-    // Untuk saat ini, kita kirim data yang tersimpan di keranjang.
-
     return handleSuccess(
       res,
       200,
@@ -172,11 +150,6 @@ exports.getCart = async (req, res) => {
   }
 };
 
-/**
- * @desc    Update quantity of an item in the cart.
- * @route   PUT /api/cart/items/:productId
- * @access  Private (Authenticated Users)
- */
 exports.updateItemQuantity = async (req, res) => {
   const userId = req.user?.uid;
   const { productId } = req.params;
@@ -198,7 +171,6 @@ exports.updateItemQuantity = async (req, res) => {
 
   const numNewQuantity = parseInt(newQuantity);
   if (isNaN(numNewQuantity) || numNewQuantity < 0) {
-    // Kuantitas 0 akan ditangani sebagai penghapusan item
     return handleError(res, {
       statusCode: 400,
       message: "Kuantitas baru harus berupa angka non-negatif.",
@@ -229,15 +201,13 @@ exports.updateItemQuantity = async (req, res) => {
     }
 
     if (numNewQuantity === 0) {
-      // Jika kuantitas baru adalah 0, hapus item dari keranjang
       cartData.items.splice(itemIndex, 1);
     } else {
       const productRef = firestore.collection("products").doc(productId);
       const productDoc = await productRef.get();
 
       if (!productDoc.exists) {
-        // Seharusnya tidak terjadi jika produk sudah ada di keranjang, tapi sebagai fallback
-        cartData.items.splice(itemIndex, 1); // Hapus item jika produk aslinya sudah tidak ada
+        cartData.items.splice(itemIndex, 1);
         await cartRef.set(cartData);
         return handleError(res, {
           statusCode: 404,
@@ -277,11 +247,6 @@ exports.updateItemQuantity = async (req, res) => {
   }
 };
 
-/**
- * @desc    Remove an item from the cart.
- * @route   DELETE /api/cart/items/:productId
- * @access  Private (Authenticated Users)
- */
 exports.removeItemFromCart = async (req, res) => {
   const userId = req.user?.uid;
   const { productId } = req.params;
@@ -342,11 +307,6 @@ exports.removeItemFromCart = async (req, res) => {
   }
 };
 
-/**
- * @desc    Clear all items from the user's cart.
- * @route   DELETE /api/cart
- * @access  Private (Authenticated Users)
- */
 exports.clearCart = async (req, res) => {
   const userId = req.user?.uid;
 
@@ -360,25 +320,19 @@ exports.clearCart = async (req, res) => {
   try {
     const cartRef = firestore.collection("carts").doc(userId);
 
-    // Update keranjang menjadi kosong
     const emptyCartData = {
       userId: userId,
       items: [],
       totalPrice: 0,
       updatedAt: new Date().toISOString(),
-      // createdAt bisa dipertahankan jika ingin tahu kapan keranjang pertama kali dibuat
-      // atau di-set ulang juga. Untuk kesederhanaan, kita set updatedAt.
     };
 
-    // Cek apakah dokumen keranjang ada sebelum melakukan set
     const cartDoc = await cartRef.get();
     if (cartDoc.exists) {
       emptyCartData.createdAt =
-        cartDoc.data().createdAt || new Date().toISOString(); // Pertahankan createdAt jika ada
+        cartDoc.data().createdAt || new Date().toISOString();
       await cartRef.set(emptyCartData);
     } else {
-      // Jika keranjang belum ada, tidak ada yang perlu dikosongkan,
-      // tapi kita bisa mengembalikan struktur keranjang kosong standar.
       emptyCartData.createdAt = new Date().toISOString();
     }
 
