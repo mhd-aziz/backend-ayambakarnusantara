@@ -1,5 +1,4 @@
-// src/config/midtransConfig.js
-require("dotenv").config(); // Pastikan ini ada dan dipanggil sebelum variabel env digunakan
+require("dotenv").config();
 
 console.log("--- Midtrans Config Initialization ---");
 console.log(

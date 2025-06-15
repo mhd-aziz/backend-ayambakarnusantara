@@ -1,10 +1,8 @@
-// src/controllers/productController.js
 const { firestore, storage } = require("../config/firebaseConfig");
 const { FieldValue } = require("firebase-admin/firestore");
 const { handleSuccess, handleError } = require("../utils/responseHandler");
 const { v4: uuidv4 } = require("uuid");
 
-// Helper Function untuk menghapus Gambar Produk dari Storage
 async function deleteProductImageFromStorage(imageURL, bucket) {
   if (!imageURL || !bucket) {
     console.log(
@@ -21,7 +19,7 @@ async function deleteProductImageFromStorage(imageURL, bucket) {
       filePath = imageURL.substring(prefixPattern1.length);
     } else if (imageURL.startsWith(prefixPattern2)) {
       filePath = imageURL.substring(prefixPattern2.length);
-      filePath = filePath.split("?")[0]; // Hapus token dan query params
+      filePath = filePath.split("?")[0];
     } else {
       console.warn(
         "Format URL gambar produk tidak dikenali, tidak dapat menghapus:",
@@ -53,7 +51,6 @@ async function deleteProductImageFromStorage(imageURL, bucket) {
   }
 }
 
-// 1. Membuat Produk Baru
 exports.createProduct = async (req, res) => {
   const uid = req.user?.uid;
   const { name, description, price, stock, category } = req.body;
@@ -169,8 +166,7 @@ exports.createProduct = async (req, res) => {
       productImageURL,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
-      // Tambahan fields jika perlu: ratings, soldCount, name_lowercase (untuk search)
-      name_lowercase: name.toLowerCase(), // Tambahkan ini untuk search case-insensitive yang efisien
+      name_lowercase: name.toLowerCase(),
     };
 
     await newProductRef.set(newProductData);
@@ -209,22 +205,14 @@ exports.getAllProducts = async (req, res) => {
       productsQuery = productsQuery.where("_id", "==", searchById);
       isSearchingById = true;
     } else {
-      // Filter berdasarkan kategori SELALU diterapkan di Firestore jika ada
       if (category) {
         productsQuery = productsQuery.where("category", "==", category);
       }
-
-      // Sorting awal di Firestore (sebelum filter nama "contains" di server)
-      // Jika sortBy adalah "name", sorting sebenarnya akan lebih akurat dilakukan di server
-      // setelah filter "contains". Namun, sorting awal bisa membantu.
       if (sortBy && sortBy !== "name") {
-        // Jangan sort by name di Firestore jika akan difilter "contains"
         productsQuery = productsQuery.orderBy(sortBy, order);
       } else if (!sortBy) {
-        // Default sort jika sortBy tidak ada (dan bukan "name")
         productsQuery = productsQuery.orderBy("createdAt", "desc");
       }
-      // Jika sortBy === "name", kita akan sort di server setelah filtering.
     }
 
     const pageNum = parseInt(page, 10);
@@ -241,11 +229,8 @@ exports.getAllProducts = async (req, res) => {
         totalProducts = products.length;
       }
     } else {
-      // Ambil semua dokumen yang cocok dengan filter Firestore (misal, kategori)
       const allMatchingDocsSnapshot = await productsQuery.get();
       allProductsData = allMatchingDocsSnapshot.docs.map((doc) => doc.data());
-
-      // Lakukan filter "contains" untuk nama di server
       if (searchByName) {
         const searchTerm = isNameSearchCaseInsensitive
           ? searchByName.toLowerCase()
@@ -255,15 +240,14 @@ exports.getAllProducts = async (req, res) => {
           const productName = isNameSearchCaseInsensitive
             ? product.name.toLowerCase()
             : product.name;
-          return productName.includes(searchTerm); // Selalu mode "contains"
+          return productName.includes(searchTerm);
         });
       }
 
-      // Lakukan sorting di server jika sortBy adalah 'name' (setelah filter "contains")
       if (sortBy === "name") {
         allProductsData.sort((a, b) => {
           const nameA = isNameSearchCaseInsensitive
-            ? (a.name || "").toLowerCase() // handle jika name null/undefined
+            ? (a.name || "").toLowerCase()
             : a.name || "";
           const nameB = isNameSearchCaseInsensitive
             ? (b.name || "").toLowerCase()
@@ -277,7 +261,6 @@ exports.getAllProducts = async (req, res) => {
       }
 
       totalProducts = allProductsData.length;
-      // Terapkan pagination pada data yang sudah difilter dan di-sort di server
       products = allProductsData.slice(offset, offset + limitNum);
     }
 
@@ -322,7 +305,7 @@ exports.getAllProducts = async (req, res) => {
     return handleError(res, error, "Gagal mengambil daftar produk.");
   }
 };
-// 3. Mendapatkan Produk Milik Seller (Private)
+
 exports.getMyProducts = async (req, res) => {
   const uid = req.user?.uid;
 
@@ -372,7 +355,6 @@ exports.getMyProducts = async (req, res) => {
   }
 };
 
-// 4. Mendapatkan Detail Produk Berdasarkan ID (Publik)
 exports.getProductById = async (req, res) => {
   const { productId } = req.params;
 

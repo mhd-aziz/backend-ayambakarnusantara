@@ -1,14 +1,32 @@
-// src/controllers/PaymentController.js
 require("dotenv").config();
 const { firestore } = require("../config/firebaseConfig");
 const snap = require("../config/midtransConfig");
 const { handleSuccess, handleError } = require("../utils/responseHandler");
 
+const getCallbackUrl = (req) => {
+  const allowedOriginsString = process.env.CORS_ALLOWED_ORIGINS || "";
+  const allowedOrigins = allowedOriginsString
+    .split(",")
+    .map((origin) => origin.trim());
+
+  const requestOrigin = req.get("origin");
+
+  if (requestOrigin && allowedOrigins.includes(requestOrigin)) {
+    return requestOrigin;
+  }
+  if (allowedOrigins.length > 0 && allowedOrigins[0]) {
+    return allowedOrigins[0];
+  }
+  console.warn(
+    "PERINGATAN: CORS_ALLOWED_ORIGINS tidak diatur. Menggunakan fallback 'http://localhost:3000'"
+  );
+  return "http://localhost:3000";
+};
+
 exports.createMidtransTransaction = async (req, res) => {
   const customerId = req.user?.uid;
   const { orderId } = req.params;
-
-  const FRONTEND_BASE_URL = process.env.FRONTEND_APP_URL;
+  const CALLBACK_BASE_URL = getCallbackUrl(req);
 
   if (!customerId) {
     return handleError(res, {
@@ -120,9 +138,9 @@ exports.createMidtransTransaction = async (req, res) => {
         phone: customerData.phoneNumber || undefined,
       },
       callbacks: {
-        finish: `${FRONTEND_BASE_URL}/pesanan/${orderId}?payment_status=finish&transaction_id=${midtransOrderIdForGateway}`,
-        unfinish: `${FRONTEND_BASE_URL}/pesanan/${orderId}?payment_status=unfinish&transaction_id=${midtransOrderIdForGateway}`,
-        error: `${FRONTEND_BASE_URL}/pesanan/${orderId}?payment_status=error&transaction_id=${midtransOrderIdForGateway}`,
+        finish: `${CALLBACK_BASE_URL}/pesanan/${orderId}?payment_status=finish&transaction_id=${midtransOrderIdForGateway}`,
+        unfinish: `${CALLBACK_BASE_URL}/pesanan/${orderId}?payment_status=unfinish&transaction_id=${midtransOrderIdForGateway}`,
+        error: `${CALLBACK_BASE_URL}/pesanan/${orderId}?payment_status=error&transaction_id=${midtransOrderIdForGateway}`,
       },
     };
 
@@ -137,7 +155,7 @@ exports.createMidtransTransaction = async (req, res) => {
       "paymentDetails.midtransSnapToken": token,
       "paymentDetails.midtransRedirectUrl": redirect_url,
       "paymentDetails.midtransOrderId": midtransOrderIdForGateway,
-      "paymentDetails.status": "pending_gateway_payment", // Konsisten dengan getStatus
+      "paymentDetails.status": "pending_gateway_payment",
       orderStatus: "AWAITING_PAYMENT",
       updatedAt: new Date().toISOString(),
     });
@@ -239,7 +257,6 @@ exports.getMidtransTransactionStatus = async (req, res) => {
       });
     }
 
-    // Menggunakan nama field yang konsisten seperti yang diupdate di createMidtransTransaction
     const gatewayAssignedOrderId =
       orderData.paymentDetails?.gatewayAssignedOrderId ||
       orderData.paymentDetails?.midtransOrderId;
@@ -290,7 +307,7 @@ exports.getMidtransTransactionStatus = async (req, res) => {
       needsUpdate = true;
     } else if (
       transaction_status === "pending" &&
-      currentInternalPaymentStatus !== "pending_gateway_payment" // Konsisten dengan status di create
+      currentInternalPaymentStatus !== "pending_gateway_payment"
     ) {
       updateFields["orderStatus"] = "AWAITING_PAYMENT";
       updateFields["paymentDetails.status"] = "pending_gateway_payment";
@@ -307,7 +324,6 @@ exports.getMidtransTransactionStatus = async (req, res) => {
     }
 
     if (needsUpdate) {
-      // Menggunakan nama field yang konsisten
       updateFields["paymentDetails.gatewayTransactionId"] =
         transaction_id || orderData.paymentDetails.gatewayTransactionId;
       updateFields["paymentDetails.paymentType"] =
@@ -367,9 +383,9 @@ exports.getMidtransTransactionStatus = async (req, res) => {
       "\nError Message:",
       error.message || "N/A",
       "\nGateway HTTP Status Code:",
-      error.httpStatusCode || "N/A", // Properti ini spesifik dari library midtrans-client
+      error.httpStatusCode || "N/A",
       "\nGateway API Response:",
-      error.ApiResponse || "N/A", // Properti ini spesifik dari library midtrans-client
+      error.ApiResponse || "N/A",
       "\nStack Trace:",
       error.stack
     );
@@ -432,7 +448,7 @@ exports.getMidtransTransactionStatus = async (req, res) => {
           typeof error.message === "string" &&
           !error.message.toLowerCase().includes("unexpected token")
         ) {
-          userFacingErrorMessage = error.message; // Gunakan jika bukan error parsing JSON
+          userFacingErrorMessage = error.message;
         }
       } catch (e) {
         if (typeof error.message === "string") {
@@ -467,7 +483,7 @@ exports.getMidtransTransactionStatus = async (req, res) => {
 exports.retryMidtransPayment = async (req, res) => {
   const customerId = req.user?.uid;
   const { orderId } = req.params;
-  const FRONTEND_BASE_URL = process.env.FRONTEND_APP_URL;
+  const CALLBACK_BASE_URL = getCallbackUrl(req);
   console.log(
     `[PaymentController] Attempting to RETRY payment gateway transaction for orderId: ${orderId}, customerId: ${customerId}`
   );
@@ -584,9 +600,9 @@ exports.retryMidtransPayment = async (req, res) => {
         phone: customerData.phoneNumber || undefined,
       },
       callbacks: {
-        finish: `${FRONTEND_BASE_URL}/pesanan/${orderId}?payment_status=finish&transaction_id=${midtransOrderIdForGateway}`,
-        unfinish: `${FRONTEND_BASE_URL}/pesanan/${orderId}?payment_status=unfinish&transaction_id=${midtransOrderIdForGateway}`,
-        error: `${FRONTEND_BASE_URL}/pesanan/${orderId}?payment_status=error&transaction_id=${midtransOrderIdForGateway}`,
+        finish: `${CALLBACK_BASE_URL}/pesanan/${orderId}?payment_status=finish&transaction_id=${midtransOrderIdForGateway}`,
+        unfinish: `${CALLBACK_BASE_URL}/pesanan/${orderId}?payment_status=unfinish&transaction_id=${midtransOrderIdForGateway}`,
+        error: `${CALLBACK_BASE_URL}/pesanan/${orderId}?payment_status=error&transaction_id=${midtransOrderIdForGateway}`,
       },
     };
     console.log(
@@ -613,7 +629,7 @@ exports.retryMidtransPayment = async (req, res) => {
     if (orderData.orderStatus === "PAYMENT_FAILED") {
       updateFieldsRetry.orderStatus = "AWAITING_PAYMENT";
     } else {
-      updateFieldsRetry.orderStatus = orderData.orderStatus; // Pertahankan status jika AWAITING_PAYMENT
+      updateFieldsRetry.orderStatus = orderData.orderStatus;
     }
 
     console.log(

@@ -346,16 +346,12 @@ exports.getSellerOrders = async (req, res) => {
       });
     }
 
-    // --- Mode Pencarian Multi-Order ---
-    // Blok if (orderIdQuery) yang mengambil satu doc dihilangkan, karena orderIdQuery kini bagian dari filter umum
     let ordersQuery = firestore.collection("orders");
 
-    // 1. Filter berdasarkan customerUserId jika disediakan (equality filter, baik untuk Firestore)
     if (customerUserIdQuery) {
       ordersQuery = ordersQuery.where("userId", "==", customerUserIdQuery);
     }
 
-    // 2. Filter berdasarkan status jika disediakan dan bukan "ALL" (equality filter, baik untuk Firestore)
     if (statusQuery && statusQuery.toUpperCase() !== "ALL") {
       ordersQuery = ordersQuery.where(
         "orderStatus",
@@ -363,9 +359,7 @@ exports.getSellerOrders = async (req, res) => {
         statusQuery.toUpperCase()
       );
     }
-    // Jika statusQuery adalah "ALL" atau tidak ada, tidak ada filter status awal.
 
-    // Selalu urutkan berdasarkan createdAt untuk konsistensi
     ordersQuery = ordersQuery.orderBy("createdAt", "desc");
     const ordersSnapshot = await ordersQuery.get();
 
@@ -382,7 +376,6 @@ exports.getSellerOrders = async (req, res) => {
     const allFetchedOrders = ordersSnapshot.docs.map((doc) => doc.data());
 
     const sellerOrdersPromises = allFetchedOrders.map(async (orderData) => {
-      // Filter WAJIB 1: Kepemilikan toko seller
       if (
         !(
           orderData.items &&
@@ -393,18 +386,16 @@ exports.getSellerOrders = async (req, res) => {
         return null;
       }
 
-      // Filter WAJIB 2 (jika orderIdQuery ada): Pencarian "contains" pada orderId
       if (orderIdQuery) {
         const orderIdTerm = orderIdQuery.toLowerCase();
         if (
           !orderData.orderId ||
           !orderData.orderId.toLowerCase().includes(orderIdTerm)
         ) {
-          return null; // orderId tidak mengandung term pencarian
+          return null;
         }
       }
 
-      // Ambil detail customer (diperlukan untuk customerSearchQuery dan untuk ditampilkan)
       let customerDetails = null;
       if (orderData.userId) {
         const customerDocRef = firestore
@@ -424,10 +415,8 @@ exports.getSellerOrders = async (req, res) => {
       }
       orderData.customerDetails = customerDetails;
 
-      // Filter WAJIB 3 (jika customerSearchQuery ada): Pencarian "contains" pada nama/email customer
       if (customerSearchQuery) {
         if (!customerDetails) {
-          // Jika mencari berdasarkan customer tapi customer tidak ditemukan/tidak ada detail, skip order ini
           return null;
         }
         const searchTerm = customerSearchQuery.toLowerCase();
@@ -439,7 +428,7 @@ exports.getSellerOrders = async (req, res) => {
           customerDetails.email.toLowerCase().includes(searchTerm);
 
         if (!nameMatch && !emailMatch) {
-          return null; // Tidak cocok dengan kriteria pencarian customer
+          return null;
         }
       }
 
@@ -1003,7 +992,7 @@ exports.confirmPayAtStorePaymentBySeller = async (req, res) => {
 };
 
 exports.getOrderPaymentProofs = async (req, res) => {
-  const currentAuthUserId = req.user?.uid; // ID pengguna yang terotentikasi
+  const currentAuthUserId = req.user?.uid;
   const { orderId } = req.params;
 
   if (!currentAuthUserId) {
@@ -1031,15 +1020,12 @@ exports.getOrderPaymentProofs = async (req, res) => {
     }
     const orderData = orderDoc.data();
 
-    // Otorisasi: Cek apakah pengguna adalah customer pemilik order atau seller pemilik toko order
     let authorized = false;
     const customerIdFromOrder = orderData.userId;
 
-    // Cek apakah pengguna adalah customer pemilik order
     if (customerIdFromOrder === currentAuthUserId) {
       authorized = true;
     } else {
-      // Jika bukan customer, cek apakah pengguna adalah seller yang relevan
       const userDocRef = firestore.collection("users").doc(currentAuthUserId);
       const userDoc = await userDocRef.get();
 
@@ -1063,18 +1049,17 @@ exports.getOrderPaymentProofs = async (req, res) => {
       });
     }
 
-    // Ambil detail pembayaran, termasuk notes dan URL gambar
     const paymentDetails = orderData.paymentDetails || {};
     const paymentProofData = {
-      confirmationNotes: paymentDetails.confirmationNotes || null, // Ambil notes, default ke null jika tidak ada
-      proofImageURLs: paymentDetails.proofImageURLs || [], // Ambil URL gambar, default ke array kosong
+      confirmationNotes: paymentDetails.confirmationNotes || null,
+      proofImageURLs: paymentDetails.proofImageURLs || [],
     };
 
     return handleSuccess(
       res,
       200,
-      "Bukti dan catatan transaksi berhasil diambil.", // Pesan disesuaikan
-      paymentProofData // Kembalikan objek yang berisi notes dan URL
+      "Bukti dan catatan transaksi berhasil diambil.",
+      paymentProofData
     );
   } catch (error) {
     console.error("Error getting order payment proofs:", error);
@@ -1157,7 +1142,6 @@ exports.getOrders = async (req, res) => {
       userRole === "seller" &&
       fetchedOrders.length === 0
     ) {
-      // Kondisi ini akan dicek setelah filter seller
       return handleSuccess(
         res,
         200,

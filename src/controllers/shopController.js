@@ -447,7 +447,6 @@ exports.updateShop = async (req, res) => {
 };
 
 exports.getMyShop = async (req, res) => {
-  // ... (fungsi ini tetap sama)
   const uid = req.user?.uid;
 
   if (!uid) {

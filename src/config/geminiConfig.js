@@ -1,4 +1,3 @@
-// src/config/geminiConfig.js
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 require("dotenv").config();
 
